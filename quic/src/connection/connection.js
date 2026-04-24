@@ -58,6 +58,7 @@ class QuicConnection extends EventEmitter {
     // Session Ticket Store for 0-RTT support
     this.ticketStore = options.ticketStore || null;
     this.zeroRttStreams = new Set();
+    this._lastTicketNonce = null;
 
     // UDP transport callback
     this._sendDatagram = options.sendDatagram || (() => {});
@@ -185,12 +186,13 @@ class QuicConnection extends EventEmitter {
       };
     });
 
-    this.tls.on('earlyKeys', ({ keys, suite }) => {
+    this.tls.on('earlyKeys', ({ keys, suite, ticketNonce }) => {
       // suite artık tls-engine'den geliyor: 'chacha20-poly1305', 'aes-256-gcm' veya 'aes-128-gcm'
       debug(this._label, `0-RTT Anahtarları yüklendi. Suite: ${suite}`);
       this.keys[ENCRYPTION_LEVEL.ZERO_RTT] = {
-        recv: { ...keys, suite },  // ✅ Gerçek cipher suite kullanılıyor
+        recv: { ...keys, suite },
       };
+      if (ticketNonce) this._lastTicketNonce = ticketNonce;
     });
 
     this.tls.on('applicationKeys', (info) => {
@@ -1074,9 +1076,18 @@ _flushStreams() {
     this.streams.clear();
   }
 
-  // ===== 0-RTT Helper =====
+  // ===== 0-RTT Helpers =====
   is0RTT(streamId) {
     return this.zeroRttStreams.has(streamId);
+  }
+
+  // Returns a stable hex identifier for the resumed ticket, used by
+  // the replay cache to key out duplicate 0-RTT flights. Falls back to
+  // null when the session was not resumed from a ticket.
+  get0RTTNonce() {
+    return this._lastTicketNonce
+      ? this._lastTicketNonce.toString('hex')
+      : null;
   }
 }
 

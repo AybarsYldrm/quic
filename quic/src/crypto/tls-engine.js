@@ -995,35 +995,46 @@ _handlePreSharedKeyExtension(data) {
     let off = 0;
     const identitiesLen = data.readUInt16BE(off); off += 2;
     const identitiesData = data.subarray(off, off + identitiesLen);
- 
+
     const ticketLen = identitiesData.readUInt16BE(0);
     const encryptedTicket = identitiesData.subarray(2, 2 + ticketLen);
- 
-    // ✅ DÜZELTİLDİ: derivePSK artık {psk, meta} veya null döndürüyor
+
     const result = derivePSK(this.hashAlgo || 'sha256', this._ticketKey, encryptedTicket);
- 
+
     if (result) {
       const { psk, meta } = result;
       this.resumedPSK = psk;
       this.accepted0RTT = true;
       log.info('\x1b[32m[TLS] 0-RTT Bileti Kabul Edildi!\x1b[0m');
- 
+
       const { deriveZeroRTTKeys } = require('./zero-rtt');
- 
       const chHash = this._getTranscriptHash();
- 
-      // ✅ DÜZELTİLDİ: this.keyLen eklendi — ChaCha20 için 32 gerekiyor
+
+      // Derive keyLen from the ticket's own cipher suite rather than
+      // this.keyLen (which may not be populated at this point, or may be
+      // stale from a previous handshake). AES-128 => 16, AES-256 and
+      // ChaCha20-Poly1305 => 32.
+      const ticketSuite = meta && typeof meta.suite === 'number' ? meta.suite : 0x1301;
+      const suiteInfo   = SUITE_INFO[ticketSuite] || SUITE_INFO[0x1301];
+      const suiteKeyLen = suiteInfo.keyLen;
+      const suiteAead   = suiteInfo.aead;
+
       const earlySecrets = deriveZeroRTTKeys(
         this.hashAlgo || 'sha256',
         psk,
         chHash,
-        this.keyLen || 16  // ← BU SATIR EKSİKTİ
+        suiteKeyLen
       );
- 
-      const suiteAead = SUITE_INFO[this.cipherSuite]?.aead || 'aes-128-gcm';
+
+      // Use a hash of the encrypted ticket as the replay nonce — the
+      // ticket blob is unique per resumption and already opaque.
+      const ticketNonce = crypto.createHash('sha256')
+        .update(encryptedTicket).digest().subarray(0, 16);
+
       this.emit('earlyKeys', {
         keys: earlySecrets.keys,
         suite: suiteAead,
+        ticketNonce,
       });
     }
   } catch (e) {

@@ -1,0 +1,131 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>nat.intranet.fitfak.net - TERMINAL</title>
+    <style>
+        body { background-color: #c0c0c0; color: #000; font-family: "MS Sans Serif", "Times New Roman", serif; margin: 15px; }
+        h1 { background-color: #000080; color: #fff; padding: 3px 10px; font-size: 18px; border: 2px outset #eee; margin: 0 0 10px 0; }
+        .status-box { border: 2px inset #eee; background-color: #fff; padding: 4px; font-size: 13px; margin-bottom: 10px; }
+        .window { border: 2px outset #eee; padding: 10px; background-color: #c0c0c0; margin-bottom: 10px; }
+        .label { font-weight: bold; }
+        .value { background-color: #fff; border: 1px inset #eee; padding: 1px 4px; font-family: "Courier New", monospace; font-size: 13px; min-width: 30px; display: inline-block; }
+        table { width: 100%; border-spacing: 5px; }
+        td { border: 2px inset #eee; padding: 8px; background-color: #d4d4d4; }
+        pre { background-color: #fff; border: 2px inset #eee; padding: 5px; font-size: 11px; height: 150px; overflow: auto; margin: 5px 0; }
+        button { background-color: #c0c0c0; border: 2px outset #eee; padding: 2px 10px; font-size: 12px; cursor: pointer; }
+        button:active { border: 2px inset #eee; }
+        .progress-bg { background-color: #808080; border: 1px solid #000; height: 14px; width: 100%; margin-top: 4px; }
+        .progress-fill { background-color: #000080; height: 100%; width: 0%; transition: width 0.5s; }
+    </style>
+</head>
+<body>
+
+<h1>Sistem Denetleyicisi - nat.intranet.fitfak.net</h1>
+
+<div class="status-box">
+    Sistem Mesajı: <span id="mainStatus" style="color: blue;">Denetleniyor...</span>
+</div>
+
+<div class="window">
+    <table>
+        <tr>
+            <td width="50%">
+                <span class="label">GÜVENLİK ANALİZİ</span><br><br>
+                Protokol: <span class="value" id="protoText">-</span><br><br>
+                Parmak İzi: <span class="value" id="fingerprintDisplay">-</span><br><br>
+                Bağlantı Kalitesi: <span id="scoreVal">0%</span>
+                <div class="progress-bg"><div id="scoreFill" class="progress-fill"></div></div>
+            </td>
+            <td width="50%">
+                <span class="label">AĞ TELEMETRİSİ (DoH)</span><br><br>
+                DoH Ping: <span class="value" id="dohPing">...</span> (dns.fitfak.net)<br><br>
+                Sunucu RTT: <span class="value" id="serverRtt">-</span><br><br>
+                Akış ID: <span class="value" id="streamId">-</span>
+            </td>
+        </tr>
+    </table>
+</div>
+
+<div class="window">
+    <span class="label">İSTEMCİ METRİKLERİ (Δ ms)</span><br><br>
+    DNS: <span class="value" id="dns">-</span> 
+    TCP: <span class="value" id="tcp">-</span> 
+    TLS: <span class="value" id="tls">-</span> 
+    TTFB: <span class="value" id="ttfb">-</span>
+</div>
+
+<div class="window">
+    <span class="label">HAM API VERİSİ</span>
+    <pre id="apiBox">Yükleniyor...</pre>
+    <p align="right"><button onclick="location.reload()">Yeniden Tara</button></p>
+</div>
+
+<script>
+    async function measureDohPing() {
+        const start = performance.now();
+        // DoH Cache-Buster: Her sorguda farklı bir nonce ekleyerek cache'i kırıyoruz
+        const nonce = Math.random().toString(36).substring(7);
+        const dnsQueryBase64 = "AAABAAABAAAAAAAAA25hdAhpbnRyYW5ldAZmaXRmYWsDbmV0AAABAAE";
+
+        try {
+            const response = await fetch(`https://dns.fitfak.net/dns-query?dns=${dnsQueryBase64}&v=${nonce}`, {
+                method: 'GET',
+                headers: { 'Accept': 'application/dns-message' },
+                cache: 'no-cache'
+            });
+            
+            if (response.ok) {
+                const end = performance.now();
+                const diff = Math.round(end - start);
+                document.getElementById("dohPing").textContent = diff + " ms";
+                // DoH'dan gelen taze gecikmeyi DNS alanına da yazalım
+                document.getElementById("dns").textContent = diff;
+            }
+        } catch (e) {
+            document.getElementById("dohPing").textContent = "TIMEOUT";
+        }
+    }
+
+    function updateUI() {
+        // Navigation Timing v2: Zaman damgaları arasındaki farkı (delta) alır
+        const [nav] = performance.getEntriesByType('navigation');
+        
+        if (nav) {
+            const diff = (val) => val > 0 ? Math.round(val) : 0;
+            
+            // QUIC/H3'te TCP ve TLS 0 gelebilir (Zaten bağlıysa)
+            const tcp = diff(nav.connectEnd - nav.connectStart);
+            const tls = nav.secureConnectionStart > 0 ? diff(nav.connectEnd - nav.secureConnectionStart) : 0;
+            const ttfb = diff(nav.responseStart - nav.requestStart);
+
+            document.getElementById("tcp").textContent = tcp > 0 ? tcp : "-";
+            document.getElementById("tls").textContent = tls > 0 ? tls : "-";
+            document.getElementById("ttfb").textContent = ttfb;
+        }
+
+        // Sunucu API Verisi
+        fetch("/api/info?t=" + Date.now())
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById("mainStatus").textContent = data.protocol === 'h3' ? "HTTP/3 (QUIC) Aktif." : "TCP Aktif.";
+                document.getElementById("protoText").textContent = data.protocol.toUpperCase();
+                document.getElementById("fingerprintDisplay").textContent = data.fingerprint;
+                document.getElementById("serverRtt").textContent = data.network.rtt;
+                document.getElementById("streamId").textContent = data.network.stream_id;
+                document.getElementById("scoreVal").textContent = data.quic_score + "%";
+                document.getElementById("scoreFill").style.width = data.quic_score + "%";
+                document.getElementById("apiBox").textContent = JSON.stringify(data, null, 2);
+            })
+            .catch(() => {
+                document.getElementById("mainStatus").textContent = "BAĞLANTI HATASI";
+                document.getElementById("mainStatus").style.color = "red";
+            });
+
+        measureDohPing();
+    }
+
+    window.onload = () => setTimeout(updateUI, 100);
+</script>
+</body>
+</html>

@@ -1,0 +1,1094 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fitfak · Chat</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;overflow:hidden;}
+:root{
+  --bg:#111b21;--panel:#202c33;--hover:#2a3942;--border:#2a3942;
+  --accent:#00a884;--accent2:#005c4b;--text:#e9edef;--muted:#8696a0;--icon:#aebac1;
+  --out-bubble:#005c4b;--in-bubble:#202c33;--red:#f15c6d;--call-bg:#1f2c33;--amber:#f1b800;
+}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;display:flex;flex-direction:column;}
+
+/* ── LOGIN ── */
+.login-overlay{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;z-index:999;}
+.login-card{background:var(--panel);border-radius:16px;padding:2.5rem 2rem;width:360px;display:flex;flex-direction:column;gap:1rem;box-shadow:0 24px 60px rgba(0,0,0,.6);}
+.login-logo{text-align:center;margin-bottom:.25rem;}
+.login-logo svg{width:56px;height:56px;fill:var(--accent);}
+.login-title{text-align:center;font-size:1.25rem;font-weight:700;color:var(--text);}
+.login-sub{text-align:center;font-size:.8rem;color:var(--muted);}
+.login-card input{padding:.75rem;background:var(--bg);border:1.5px solid var(--border);color:var(--text);border-radius:8px;outline:none;font-size:.95rem;transition:border-color .2s;}
+.login-card input:focus{border-color:var(--accent);}
+.login-btn{padding:.85rem;background:var(--accent);color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:1rem;transition:background .2s;}
+.login-btn:hover{background:var(--accent2);}
+.login-error{font-size:.8rem;color:var(--red);text-align:center;display:none;}
+
+/* ── APP SHELL ── */
+#app{display:none;flex:1;height:100vh;}
+
+/* ── SIDEBAR ── */
+#sidebar{width:360px;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;height:100vh;}
+.sb-header{background:var(--panel);padding:.75rem 1rem;display:flex;align-items:center;gap:.75rem;border-bottom:1px solid var(--border);}
+.avatar{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.9rem;color:#fff;flex-shrink:0;user-select:none;}
+.sb-user{flex:1;min-width:0;}
+.sb-name{font-weight:600;font-size:.9rem;}
+.sb-status{font-size:.72rem;color:var(--accent);}
+.icon-btn{background:transparent;border:none;color:var(--icon);cursor:pointer;padding:.4rem;border-radius:50%;display:flex;align-items:center;justify-content:center;transition:background .15s;}
+.icon-btn:hover{background:var(--hover);}
+.search-wrap{padding:.5rem .75rem;background:rgba(0,0,0,.2);}
+.search-inner{background:var(--hover);border-radius:8px;display:flex;align-items:center;padding:.5rem .75rem;gap:.5rem;}
+.search-inner input{background:none;border:none;outline:none;color:var(--text);font-size:.88rem;flex:1;}
+.search-inner input::placeholder{color:var(--muted);}
+.contacts-head{padding:.4rem 1rem;font-size:.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;background:rgba(0,0,0,.1);}
+#contactList{flex:1;overflow-y:auto;}
+
+/* ── CONTACT CARD ── */
+.contact-card{display:flex;align-items:center;gap:.75rem;padding:.7rem 1rem;cursor:pointer;border-bottom:1px solid rgba(42,57,66,.4);transition:background .12s;position:relative;}
+.contact-card:hover{background:var(--hover);}
+.contact-info{flex:1;min-width:0;}
+.contact-name{font-weight:500;font-size:.93rem;}
+.contact-sub{font-size:.76rem;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.contact-sub.online{color:var(--accent);}
+.contact-sub.busy{color:var(--amber);}
+.status-dot{position:absolute;left:46px;bottom:12px;width:10px;height:10px;border-radius:50%;border:2px solid var(--panel);}
+.status-dot.online{background:var(--accent);}
+.status-dot.busy{background:var(--amber);}
+.call-btn{background:none;border:none;cursor:pointer;color:var(--icon);padding:.4rem;border-radius:50%;display:flex;transition:all .15s;}
+.call-btn:hover{background:rgba(0,168,132,.15);color:var(--accent);}
+.call-btn.disabled{opacity:.3;pointer-events:none;}
+
+/* ── CHAT PANEL (bottom of sidebar) ── */
+.chat-panel{border-top:1px solid var(--border);display:flex;flex-direction:column;max-height:220px;}
+.chat-msgs{overflow-y:auto;padding:.5rem .75rem;display:flex;flex-direction:column;gap:.35rem;max-height:165px;}
+.chat-bubble{padding:.38rem .65rem;border-radius:8px;font-size:.81rem;max-width:85%;word-break:break-word;line-height:1.35;}
+.chat-bubble.out{background:var(--out-bubble);align-self:flex-end;}
+.chat-bubble.in{background:var(--in-bubble);align-self:flex-start;}
+.chat-bubble strong{font-size:.72rem;display:block;color:var(--accent);margin-bottom:1px;}
+.chat-sys{font-size:.72rem;color:var(--muted);text-align:center;padding:.2rem;}
+.chat-input-row{padding:.45rem .6rem;display:flex;gap:.4rem;background:var(--panel);}
+.chat-input{flex:1;padding:.48rem .75rem;background:var(--hover);border:none;color:var(--text);border-radius:20px;outline:none;font-size:.85rem;}
+.send-btn{background:var(--accent);border:none;color:#fff;border-radius:50%;width:34px;height:34px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background .15s;}
+.send-btn:hover{background:var(--accent2);}
+.send-btn:disabled{opacity:.4;pointer-events:none;}
+
+/* ── MAIN ── */
+#main{flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative;}
+
+/* ── IDLE ── */
+#idleState{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem;color:var(--muted);text-align:center;padding:2rem;background:var(--bg);}
+#idleState .big-icon{opacity:.06;margin-bottom:1rem;}
+#idleState h2{font-size:1.4rem;font-weight:300;color:var(--text);}
+#idleState p{font-size:.83rem;max-width:320px;line-height:1.6;}
+.conn-badge{display:flex;align-items:center;gap:.5rem;font-size:.75rem;margin-top:.5rem;}
+.spinner{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── CALL VIEW ── */
+#callState{flex:1;display:none;flex-direction:column;position:relative;background:var(--call-bg);}
+
+.call-bar{position:absolute;top:0;left:0;right:0;z-index:20;padding:1rem 1.25rem;display:flex;align-items:center;gap:.9rem;background:linear-gradient(to bottom,rgba(0,0,0,.65),transparent);}
+.call-bar-avatar{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1rem;color:#fff;flex-shrink:0;}
+.call-bar-name{font-size:1.05rem;font-weight:600;}
+.call-bar-status{font-size:.77rem;color:rgba(255,255,255,.65);}
+#callDuration{margin-left:auto;font-size:.88rem;font-family:monospace;color:rgba(255,255,255,.8);}
+
+#remoteWrap{flex:1;position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden;}
+#remoteCanvas{width:100%;height:100%;object-fit:cover;display:block;}
+#noVideoBg{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.75rem;pointer-events:none;}
+#noVideoAvatar{width:90px;height:90px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:2.2rem;font-weight:700;color:#fff;}
+#noVideoLabel{font-size:.82rem;color:var(--muted);}
+
+#localPip{position:absolute;bottom:90px;right:16px;z-index:25;width:150px;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.55);border:2px solid rgba(255,255,255,.12);cursor:move;}
+#localPip video{width:100%;display:block;transform:scaleX(-1);}
+
+/* ── OUTGOING CALL OVERLAY ── */
+#outgoingOverlay{position:absolute;inset:0;background:var(--call-bg);z-index:30;display:none;flex-direction:column;align-items:center;justify-content:center;gap:1.2rem;}
+#outgoingOverlay.show{display:flex;}
+.out-avatar{width:96px;height:96px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:2.4rem;font-weight:700;color:#fff;animation:pulse 2s ease-in-out infinite;}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(0,168,132,.35);}50%{box-shadow:0 0 0 18px rgba(0,168,132,0);}}
+.out-name{font-size:1.5rem;font-weight:600;}
+.out-status{font-size:.88rem;color:var(--muted);}
+.out-cancel{margin-top:1rem;width:62px;height:62px;border-radius:50%;background:var(--red);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 16px rgba(241,92,109,.4);}
+
+/* ── CALL CONTROLS ── */
+#callCtrls{position:absolute;bottom:0;left:0;right:0;z-index:20;padding:1.25rem;display:flex;justify-content:center;align-items:center;gap:1.75rem;background:linear-gradient(to top,rgba(0,0,0,.65),transparent);}
+.ctrl-wrap{display:flex;flex-direction:column;align-items:center;gap:.35rem;}
+.ctrl-btn{width:54px;height:54px;border-radius:50%;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:transform .15s,background .15s;color:#fff;}
+.ctrl-btn:hover{transform:scale(1.08);}
+.ctrl-btn.mute-btn{background:rgba(255,255,255,.18);}
+.ctrl-btn.mute-btn.on{background:#fff;color:#111;}
+.ctrl-btn.vid-btn{background:rgba(255,255,255,.18);}
+.ctrl-btn.vid-btn.on{background:#fff;color:#111;}
+.ctrl-btn.end-btn{background:var(--red);width:62px;height:62px;box-shadow:0 4px 16px rgba(241,92,109,.4);}
+.ctrl-btn.end-btn:hover{transform:scale(1.12);}
+.ctrl-lbl{font-size:.68rem;color:rgba(255,255,255,.65);}
+
+/* ── INCOMING MODAL ── */
+#incomingModal{position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:600;display:none;align-items:center;justify-content:center;backdrop-filter:blur(10px);}
+#incomingModal.show{display:flex;}
+.inc-card{background:var(--panel);border-radius:20px;padding:2rem 1.75rem;text-align:center;width:300px;box-shadow:0 24px 60px rgba(0,0,0,.6);}
+.inc-avatar{width:80px;height:80px;border-radius:50%;margin:0 auto 1rem;display:flex;align-items:center;justify-content:center;font-size:2rem;font-weight:700;color:#fff;animation:pulse 1.5s infinite;}
+.inc-name{font-size:1.25rem;font-weight:700;margin-bottom:.2rem;}
+.inc-sub{font-size:.82rem;color:var(--muted);margin-bottom:1.5rem;}
+.inc-actions{display:flex;justify-content:center;gap:2.5rem;}
+.inc-grp{display:flex;flex-direction:column;align-items:center;gap:.4rem;}
+.inc-btn{width:60px;height:60px;border-radius:50%;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:transform .15s;}
+.inc-btn:hover{transform:scale(1.1);}
+.inc-btn.accept{background:var(--accent);box-shadow:0 4px 16px rgba(0,168,132,.35);}
+.inc-btn.reject{background:var(--red);box-shadow:0 4px 16px rgba(241,92,109,.35);}
+.inc-lbl{font-size:.72rem;color:var(--muted);}
+
+/* ── SCROLLBAR ── */
+::-webkit-scrollbar{width:5px;}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+::-webkit-scrollbar-track{background:transparent;}
+
+/* ── EMPTY PEERS ── */
+.peers-empty{padding:2rem;text-align:center;color:var(--muted);font-size:.83rem;line-height:1.6;}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div class="login-overlay" id="loginOverlay">
+  <div class="login-card">
+    <div class="login-logo">
+      <svg viewBox="0 0 24 24"><path d="M12 0C5.373 0 0 5.373 0 12c0 2.096.536 4.07 1.478 5.789L.05 23.36l5.712-1.5A11.948 11.948 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 22c-1.906 0-3.693-.498-5.24-1.37l-.376-.22-3.39.89.906-3.308-.237-.385A9.944 9.944 0 012 12C2 6.477 6.477 2 12 2s10 4.477 10 10-4.477 10-10 10zm5.24-7.414c-.287-.143-1.7-.84-1.964-.937-.264-.096-.455-.143-.647.143-.192.287-.74.937-.908 1.128-.168.192-.335.215-.622.072-.287-.144-1.211-.446-2.307-1.423-.853-.76-1.429-1.698-1.597-1.985-.168-.287-.018-.442.126-.585.13-.13.287-.335.43-.502.144-.168.192-.287.288-.478.096-.192.048-.359-.024-.502-.072-.143-.647-1.558-.888-2.132-.233-.56-.47-.484-.647-.493l-.55-.01c-.192 0-.502.072-.766.358-.264.287-1.005.98-1.005 2.393 0 1.413 1.029 2.779 1.173 2.97.143.192 2.025 3.09 4.91 4.333.687.297 1.222.474 1.64.607.69.22 1.317.189 1.813.115.553-.083 1.7-.695 1.94-1.365.24-.67.24-1.245.168-1.365-.072-.12-.264-.192-.55-.335z"/></svg>
+    </div>
+    <div class="login-title">Fitfak Chat</div>
+    <div class="login-sub">Hesabınıza giriş yapın</div>
+    <input type="text"     id="inputUser" placeholder="aybars, test1, test2" autocomplete="username">
+    <input type="password" id="inputPass" placeholder="Şifre (123)" value="123" autocomplete="current-password">
+    <div class="login-error" id="loginErr"></div>
+    <button class="login-btn" id="btnLogin">Giriş Yap</button>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app">
+  <!-- SIDEBAR -->
+  <div id="sidebar">
+    <div class="sb-header">
+      <div class="avatar" id="myAvatar" style="background:var(--accent)">?</div>
+      <div class="sb-user">
+        <div class="sb-name"  id="myName">—</div>
+        <div class="sb-status">Çevrimiçi</div>
+      </div>
+      <button class="icon-btn" id="btnLogout" title="Çıkış Yap">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg>
+      </button>
+    </div>
+
+    <div class="search-wrap">
+      <div class="search-inner">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" stroke-width="2.5" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="searchInput" placeholder="Ara veya yeni sohbet başlat">
+      </div>
+    </div>
+
+    <div class="contacts-head">Kişiler</div>
+    <div id="contactList">
+      <div class="peers-empty">Bağlantı bekleniyor...</div>
+    </div>
+
+    <!-- Chat panel -->
+    <div class="chat-panel">
+      <div class="chat-msgs" id="chatMsgs"></div>
+      <div class="chat-input-row">
+        <input type="text" id="chatInput" class="chat-input" placeholder="Mesaj yaz..." disabled>
+        <button class="send-btn" id="btnSend" disabled>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M2 21L23 12 2 3v7l15 2-15 2v7z"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN -->
+  <div id="main">
+
+    <!-- IDLE -->
+    <div id="idleState">
+      <div class="big-icon">
+        <svg width="220" height="220" viewBox="0 0 200 200" fill="var(--text)">
+          <circle cx="100" cy="100" r="95" stroke="currentColor" stroke-width="6" fill="none"/>
+          <path d="M55 125 C55 88 75 68 100 68 C125 68 145 88 145 125" stroke="currentColor" stroke-width="6" fill="none" stroke-linecap="round"/>
+          <circle cx="80" cy="93" r="9" fill="currentColor"/>
+          <circle cx="120" cy="93" r="9" fill="currentColor"/>
+        </svg>
+      </div>
+      <h2>Fitfak Chat</h2>
+      <p>Soldaki kişilerden birine tıklayarak görüntülü arama başlatabilirsiniz.</p>
+      <div class="conn-badge" id="connBadge">
+        <div class="spinner"></div> Sunucuya bağlanıyor...
+      </div>
+    </div>
+
+    <!-- CALL VIEW -->
+    <div id="callState">
+
+      <!-- Top bar -->
+      <div class="call-bar">
+        <div class="call-bar-avatar" id="callAvatar">?</div>
+        <div>
+          <div class="call-bar-name"   id="callName">—</div>
+          <div class="call-bar-status" id="callStatus">Bağlanıyor...</div>
+        </div>
+        <div id="callDuration"></div>
+      </div>
+
+      <!-- Remote video -->
+      <div id="remoteWrap">
+        <canvas id="remoteCanvas" width="1280" height="720"></canvas>
+        <div id="noVideoBg">
+          <div id="noVideoAvatar">?</div>
+          <div id="noVideoLabel">Video bekleniyor...</div>
+        </div>
+      </div>
+
+      <!-- Local PiP -->
+      <div id="localPip">
+        <video id="localVideo" autoplay muted playsinline></video>
+      </div>
+
+      <!-- Outgoing overlay -->
+      <div id="outgoingOverlay">
+        <div class="out-avatar" id="outAvatar">?</div>
+        <div class="out-name"   id="outName">—</div>
+        <div class="out-status">Aranıyor...</div>
+        <button class="out-cancel" id="btnCancelCall">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="white"><path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/></svg>
+        </button>
+        <div style="font-size:.72rem;color:var(--muted);">İptal Et</div>
+      </div>
+
+      <!-- Controls -->
+      <div id="callCtrls">
+        <div class="ctrl-wrap">
+          <button class="ctrl-btn mute-btn" id="btnMute">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" id="micSvg"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/></svg>
+          </button>
+          <span class="ctrl-lbl" id="muteLabel">Mikrofon</span>
+        </div>
+        <div class="ctrl-wrap">
+          <button class="ctrl-btn end-btn" id="btnEndCall">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="white"><path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/></svg>
+          </button>
+          <span class="ctrl-lbl">Bitir</span>
+        </div>
+        <div class="ctrl-wrap">
+          <button class="ctrl-btn vid-btn" id="btnVidToggle">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" id="vidSvg"><path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>
+          </button>
+          <span class="ctrl-lbl" id="vidLabel">Kamera</span>
+        </div>
+      </div>
+
+    </div><!-- /callState -->
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<!-- INCOMING MODAL -->
+<div id="incomingModal">
+  <div class="inc-card">
+    <div class="inc-avatar" id="incAvatar">?</div>
+    <div class="inc-name"   id="incName">—</div>
+    <div class="inc-sub">Görüntülü arama geliyor</div>
+    <div class="inc-actions">
+      <div class="inc-grp">
+        <button class="inc-btn reject" id="btnReject">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="white"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+        <span class="inc-lbl">Reddet</span>
+      </div>
+      <div class="inc-grp">
+        <button class="inc-btn accept" id="btnAccept">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="white"><path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/></svg>
+        </button>
+        <span class="inc-lbl">Kabul Et</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ═══ CONSTANTS ═══════════════════════════════════════════════════════════════
+const TYPE_VIDEO = 0x02, TYPE_AUDIO = 0x01;
+const HDR_VIDEO = 10, HDR_AUDIO = 9;
+const MAX_PAYLOAD = 1100;
+const KEYFRAME_INT = 30;   // Send natural keyframe every N frames
+const INIT_BURST   = 6;    // Initial keyframe burst on call start
+
+// ═══ GLOBAL STATE ═════════════════════════════════════════════════════════════
+let myId = null, myName = null, jwtToken = null;
+const S = { IDLE:0, CALLING:1, RINGING:2, CONNECTED:3 };
+let callState = S.IDLE;
+let activePeerId = null, activePeerName = '';
+
+let transport  = null;
+let sigWriter  = null, dgramWriter = null;
+let localStream  = null;
+let videoEncoder = null, audioEncoder = null;
+let videoReader  = null, audioReader  = null;
+let isMuted = false, videoOff = false;
+let frameSeq = 0, frameCtr = 0;
+let forceKey = false, burstKeyframes = 0;
+let callTimer = null, callSeconds = 0;
+let activePeer = null; // PeerSession
+
+const onlinePeers = new Map(); // id -> {name}
+
+// ═══ UTILITIES ════════════════════════════════════════════════════════════════
+const $ = id => document.getElementById(id);
+const initials = n => (n||'?').trim().split(/\s+/).map(w=>w[0]).join('').toUpperCase().slice(0,2);
+const avatarPalette = ['#6c5ce7','#00cec9','#e17055','#74b9ff','#a29bfe','#fd79a8','#55efc4','#fdcb6e'];
+const avatarColor  = id => avatarPalette[Number(id) % avatarPalette.length];
+
+// ═══ RINGTONE ═════════════════════════════════════════════════════════════════
+let _rCtx = null, _rOsc = null, _rInt = null;
+function playRing() {
+  if (!_rCtx) _rCtx = new AudioContext();
+  _rOsc = _rCtx.createOscillator();
+  const g = _rCtx.createGain();
+  _rOsc.type = 'sine'; _rOsc.frequency.value = 880;
+  _rOsc.connect(g); g.connect(_rCtx.destination); g.gain.value = 0.4;
+  _rOsc.start();
+  let on = true;
+  _rInt = setInterval(() => { g.gain.setValueAtTime(on?0.4:0, _rCtx.currentTime); on=!on; }, 400);
+}
+function stopRing() {
+  clearInterval(_rInt);
+  if (_rOsc) { try{_rOsc.stop();_rOsc.disconnect();}catch(_){} _rOsc=null; }
+}
+
+// ═══ PEER SESSION (remote video/audio decoder) ════════════════════════════════
+class PeerSession {
+  constructor(id, name) {
+    this.clientId = id;
+    this.name = name;
+    this.frames = new Map();
+    this.decTs  = 0;
+    this.waitKey   = true;
+    this.needReset = false;
+    this._lastPli  = 0;
+    this.hasVideo  = false;
+
+    this.vdec = null;
+    this.adec = null;
+    this.audCtx  = new AudioContext({ sampleRate:48000 });
+    this.nextAud = 0;
+
+    this._initVDec();
+    this._initADec();
+  }
+
+  _initVDec() {
+    if (this.vdec && this.vdec.state !== 'closed') try{this.vdec.close();}catch(_){}
+    this.vdec = new VideoDecoder({
+      output: frame => {
+        const canvas = $('remoteCanvas');
+        if (!canvas) { frame.close(); return; }
+        if (canvas.width  !== frame.displayWidth)  canvas.width  = frame.displayWidth;
+        if (canvas.height !== frame.displayHeight) canvas.height = frame.displayHeight;
+        canvas.getContext('2d',{alpha:false}).drawImage(frame,0,0);
+        frame.close();
+        if (!this.hasVideo) {
+          this.hasVideo = true;
+          $('noVideoBg').style.display = 'none';
+        }
+      },
+      error: () => { this.needReset = true; }
+    });
+    this.vdec.configure({ codec:'vp8', optimizeForLatency:true });
+    this.waitKey   = true;
+    this.needReset = false;
+  }
+
+  _initADec() {
+    if (this.adec && this.adec.state !== 'closed') try{this.adec.close();}catch(_){}
+    this.adec = new AudioDecoder({
+      output: d => this._playAudio(d),
+      error: () => {}
+    });
+    this.adec.configure({ codec:'opus', sampleRate:48000, numberOfChannels:1 });
+  }
+
+  // ─── KEY FIX: rate-limited PLI request ───────────────────────────────────
+  _pli() {
+    const now = Date.now();
+    if (now - this._lastPli < 600) return;
+    this._lastPli = now;
+    sendSig({ type:'pli', target:this.clientId });
+  }
+
+  receiveVideo(seq, chunkIdx, totalChunks, isKey, data) {
+    if (!this.frames.has(seq))
+      this.frames.set(seq, { chunks:new Map(), total:totalChunks, isKey, got:0, born:performance.now() });
+
+    const fb = this.frames.get(seq);
+    if (fb.chunks.has(chunkIdx)) return;
+    fb.chunks.set(chunkIdx, data);
+    fb.got++;
+    if (fb.got < fb.total) return;
+    this.frames.delete(seq);
+
+    // evict stale partial frames and request keyframe if any were key frames
+    const now = performance.now();
+    for (const [k,v] of this.frames) {
+      if (now - v.born > 500) {
+        this.frames.delete(k);
+        if (v.isKey) this._pli();
+      }
+    }
+
+    // assemble
+    let totalLen = 0;
+    for (let i=0;i<fb.total;i++) totalLen += (fb.chunks.get(i)?.length||0);
+    const buf = new Uint8Array(totalLen);
+    let off = 0;
+    for (let i=0;i<fb.total;i++) {
+      const c = fb.chunks.get(i);
+      if (!c) { this._pli(); return; }
+      buf.set(c, off); off += c.length;
+    }
+
+    if (this.needReset) {
+      if (!isKey) { this._pli(); return; }
+      this._initVDec();
+    }
+
+    // ★★★ THE ACTUAL BUG FIX ★★★
+    // Old code: silently dropped non-key frames while waiting. PLI was never sent.
+    // New code: if we're still waiting for the first keyframe, ask for one.
+    if (this.waitKey && !isKey) { this._pli(); return; }
+    if (isKey) this.waitKey = false;
+
+    if (this.vdec.state !== 'configured') return;
+    try {
+      this.vdec.decode(new EncodedVideoChunk({
+        type: isKey ? 'key' : 'delta',
+        timestamp: this.decTs++ * 33333,
+        data: buf
+      }));
+    } catch(_) {
+      this.needReset = true;
+      this._pli();
+    }
+  }
+
+  receiveAudio(ts, data) {
+    if (!this.adec || this.adec.state !== 'configured') return;
+    try { this.adec.decode(new EncodedAudioChunk({ type:'key', timestamp:ts, data })); }
+    catch(_) {}
+  }
+
+  _playAudio(audioData) {
+    if (this.audCtx.state === 'suspended') this.audCtx.resume();
+    const nf  = audioData.numberOfFrames;
+    const f32 = new Float32Array(nf);
+    audioData.copyTo(f32, { planeIndex:0, format:'f32' });
+    audioData.close();
+    const buf = this.audCtx.createBuffer(1, nf, 48000);
+    buf.getChannelData(0).set(f32);
+    const src = this.audCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(this.audCtx.destination);
+    const t = this.audCtx.currentTime;
+    if (this.nextAud < t + 0.02) this.nextAud = t + 0.02;
+    src.start(this.nextAud);
+    this.nextAud += buf.duration;
+  }
+
+  destroy() {
+    try { if (this.vdec?.state !== 'closed') this.vdec?.close(); } catch(_) {}
+    try { if (this.adec?.state !== 'closed') this.adec?.close(); } catch(_) {}
+    try { this.audCtx?.close(); } catch(_) {}
+  }
+}
+
+// ═══ SIGNALING ════════════════════════════════════════════════════════════════
+async function sendSig(msg) {
+  if (!sigWriter) return;
+  try {
+    await sigWriter.ready;
+    await sigWriter.write(new TextEncoder().encode(JSON.stringify(msg)+'\n'));
+  } catch(_) {}
+}
+
+async function connectWT() {
+  setConnBadge('Bağlanıyor...', false);
+  try {
+    transport = new WebTransport(`https://${location.hostname}/webtransport`);
+    await transport.ready;
+
+    setConnBadge('Bağlı ✓', true);
+    $('chatInput').disabled = false;
+    $('btnSend').disabled   = false;
+
+    dgramWriter = transport.datagrams.writable.getWriter();
+
+    const bidi = await transport.createBidirectionalStream();
+    sigWriter   = bidi.writable.getWriter();
+
+    await sendSig({ type:'hello', token:jwtToken });
+    readSignaling(bidi.readable);
+    readDatagrams();
+
+    transport.closed.then(onDisconnect).catch(onDisconnect);
+  } catch(e) {
+    setConnBadge('Bağlantı Hatası!', false);
+    console.error('[WT]', e);
+  }
+}
+
+function setConnBadge(msg, ok) {
+  const el = $('connBadge');
+  if (!el) return;
+  el.innerHTML = ok
+    ? `<div style="width:8px;height:8px;border-radius:50%;background:var(--accent)"></div>${msg}`
+    : `<div class="spinner"></div>${msg}`;
+}
+
+function onDisconnect() {
+  setConnBadge('Bağlantı Koptu', false);
+  sigWriter = null; dgramWriter = null;
+  if (callState !== S.IDLE) { sendSig({type:'call_end',to:activePeerId}); executeEndCall(); }
+  for (const [id] of onlinePeers) removePeer(id);
+  onlinePeers.clear();
+}
+
+async function readSignaling(readable) {
+  const reader = readable.getReader();
+  const dec    = new TextDecoder();
+  let buf = '';
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream:true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) if (line.trim()) try { handleSig(JSON.parse(line)); } catch(_){}
+    }
+  } catch(_) {}
+}
+
+function handleSig(msg) {
+  switch (msg.type) {
+    case 'error':
+      alert(msg.message);
+      location.reload();
+      break;
+
+    case 'peers':
+      msg.peers.forEach(p => addPeer(p.id, p.name));
+      break;
+
+    case 'joined':
+      addPeer(msg.clientId, msg.name);
+      appendSys(`${msg.name} katıldı.`);
+      break;
+
+    case 'left':
+      if (activePeerId === msg.clientId && callState !== S.IDLE) executeEndCall();
+      appendSys(`${onlinePeers.get(msg.clientId)?.name || 'Birisi'} ayrıldı.`);
+      removePeer(msg.clientId);
+      break;
+
+    case 'ping':
+      sendSig({ type:'pong' });
+      break;
+
+    case 'call_request':
+      if (callState === S.IDLE) {
+        callState = S.RINGING;
+        activePeerId   = msg.from;
+        activePeerName = msg.fromName;
+        showIncoming(msg.fromName, msg.from);
+        playRing();
+      } else {
+        sendSig({ type:'call_reject', to:msg.from });
+      }
+      break;
+
+    case 'call_accept':
+      if (callState === S.CALLING && activePeerId === msg.from) {
+        stopRing();
+        $('outgoingOverlay').classList.remove('show');
+        callState = S.CONNECTED;
+        $('callStatus').innerText = 'Görüşüyor';
+        startMedia();
+        startTimer();
+      }
+      break;
+
+    case 'call_reject':
+      if (callState === S.CALLING) {
+        appendSys(`${activePeerName} aramayı reddetti.`);
+        resetCallUI();
+      }
+      break;
+
+    case 'call_end':
+      executeEndCall();
+      break;
+
+    case 'pli':
+      // Remote side is requesting a keyframe from us
+      forceKey = true;
+      burstKeyframes = 3;
+      break;
+
+    case 'chat':
+      appendChat(msg.name, msg.text, 'in');
+      break;
+  }
+}
+
+// ═══ PEER LIST ════════════════════════════════════════════════════════════════
+function addPeer(id, name) {
+  if (id === myId) return;
+  onlinePeers.set(id, { name });
+  renderPeers();
+}
+function removePeer(id) {
+  onlinePeers.delete(id);
+  renderPeers();
+}
+
+function renderPeers() {
+  const list = $('contactList');
+  const q    = $('searchInput').value.toLowerCase();
+
+  if (onlinePeers.size === 0) {
+    list.innerHTML = '<div class="peers-empty">Henüz kimse çevrimiçi değil.<br>Başka bir kullanıcı giriş yaptığında burada görünecek.</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  for (const [id, { name }] of onlinePeers) {
+    if (q && !name.toLowerCase().includes(q)) continue;
+    const busy = (callState !== S.IDLE && activePeerId === id);
+
+    const card = document.createElement('div');
+    card.className = 'contact-card';
+    card.id = `contact-${id}`;
+    card.innerHTML = `
+      <div class="avatar" style="background:${avatarColor(id)}">${initials(name)}</div>
+      <div class="status-dot ${busy?'busy':'online'}"></div>
+      <div class="contact-info">
+        <div class="contact-name">${name}</div>
+        <div class="contact-sub ${busy?'busy':'online'}">${busy?'📞 Görüşmede':'● Çevrimiçi'}</div>
+      </div>
+      <button class="call-btn ${callState!==S.IDLE?'disabled':''}" data-id="${id}" data-name="${name}" title="Görüntülü Ara">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/>
+        </svg>
+      </button>`;
+
+    card.querySelector('.call-btn').onclick = e => {
+      if (callState !== S.IDLE) return;
+      const tid   = Number(e.currentTarget.dataset.id);
+      const tname = e.currentTarget.dataset.name;
+      initiateCall(tid, tname);
+    };
+
+    list.appendChild(card);
+  }
+}
+
+$('searchInput').oninput = renderPeers;
+
+// ═══ CALL FLOW ════════════════════════════════════════════════════════════════
+function initiateCall(peerId, peerName) {
+  callState      = S.CALLING;
+  activePeerId   = peerId;
+  activePeerName = peerName;
+
+  mountCallUI(peerName, peerId);
+  $('outgoingOverlay').classList.add('show');
+  $('callStatus').innerText = 'Aranıyor...';
+  renderPeers();
+
+  sendSig({ type:'call_request', to:peerId });
+}
+
+function mountCallUI(name, id) {
+  $('idleState').style.display = 'none';
+  $('callState').style.display = 'flex';
+
+  const col = avatarColor(id);
+  const ini = initials(name);
+
+  $('callAvatar').innerText = ini;
+  $('callAvatar').style.background = col;
+  $('callName').innerText = name;
+  $('noVideoAvatar').innerText = ini;
+  $('noVideoAvatar').style.background = col;
+  $('noVideoBg').style.display = 'flex';
+
+  $('outAvatar').innerText = ini;
+  $('outAvatar').style.background = col;
+  $('outName').innerText = name;
+}
+
+function showIncoming(name, id) {
+  const col = avatarColor(id);
+  $('incAvatar').innerText  = initials(name);
+  $('incAvatar').style.background = col;
+  $('incName').innerText = name;
+  $('incomingModal').classList.add('show');
+}
+
+$('btnAccept').onclick = () => {
+  stopRing();
+  $('incomingModal').classList.remove('show');
+  callState = S.CONNECTED;
+  sendSig({ type:'call_accept', to:activePeerId });
+  mountCallUI(activePeerName, activePeerId);
+  $('callStatus').innerText = 'Görüşüyor';
+  startMedia();
+  startTimer();
+};
+
+$('btnReject').onclick = () => {
+  stopRing();
+  $('incomingModal').classList.remove('show');
+  sendSig({ type:'call_reject', to:activePeerId });
+  resetCallUI();
+};
+
+$('btnCancelCall').onclick = () => {
+  sendSig({ type:'call_end', to:activePeerId });
+  executeEndCall();
+};
+
+$('btnEndCall').onclick = () => {
+  sendSig({ type:'call_end', to:activePeerId });
+  executeEndCall();
+};
+
+async function executeEndCall() {
+  stopRing();
+  stopTimer();
+  $('incomingModal').classList.remove('show');
+
+  if (localStream) { localStream.getTracks().forEach(t=>t.stop()); localStream=null; }
+
+  if (videoReader) { try{await videoReader.cancel();}catch(_){} videoReader=null; }
+  if (audioReader) { try{await audioReader.cancel();}catch(_){} audioReader=null; }
+
+  if (videoEncoder?.state !== 'closed') try{videoEncoder.close();}catch(_){}
+  videoEncoder = null;
+
+  if (audioEncoder?.state !== 'closed') try{audioEncoder.close();}catch(_){}
+  audioEncoder = null;
+
+  if (activePeer) { activePeer.destroy(); activePeer=null; }
+
+  frameSeq=0; frameCtr=0; forceKey=false; burstKeyframes=0;
+
+  resetCallUI();
+}
+
+function resetCallUI() {
+  callState      = S.IDLE;
+  activePeerId   = null;
+  activePeerName = '';
+
+  $('idleState').style.display    = 'flex';
+  $('callState').style.display    = 'none';
+  $('outgoingOverlay').classList.remove('show');
+  $('localVideo').srcObject = null;
+  $('callDuration').innerText = '';
+
+  isMuted  = false; videoOff = false;
+  $('btnMute').classList.remove('on');
+  $('muteLabel').innerText = 'Mikrofon';
+  $('btnVidToggle').classList.remove('on');
+  $('vidLabel').innerText = 'Kamera';
+
+  // clear canvas
+  const c = $('remoteCanvas');
+  c.getContext('2d',{alpha:false}).fillStyle='#1f2c33';
+  c.getContext('2d',{alpha:false}).fillRect(0,0,c.width,c.height);
+
+  renderPeers();
+}
+
+// ═══ CALL TIMER ═══════════════════════════════════════════════════════════════
+function startTimer() {
+  callSeconds = 0;
+  callTimer = setInterval(() => {
+    callSeconds++;
+    const m = String(Math.floor(callSeconds/60)).padStart(2,'0');
+    const s = String(callSeconds%60).padStart(2,'0');
+    $('callDuration').innerText = `${m}:${s}`;
+  }, 1000);
+}
+function stopTimer() {
+  clearInterval(callTimer); callTimer=null;
+}
+
+// ═══ MEDIA (ENCODER / DECODER) ════════════════════════════════════════════════
+async function startMedia() {
+  // Create peer session FIRST — so inbound frames arriving during getUserMedia are handled
+  activePeer = new PeerSession(activePeerId, activePeerName);
+
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      video:{ width:640, height:360, frameRate:24 },
+      audio:{ sampleRate:48000, channelCount:1, echoCancellation:true, noiseSuppression:true }
+    });
+  } catch(e) {
+    appendSys('Kamera/Mikrofon erişim hatası: ' + e.message);
+    return;
+  }
+
+  $('localVideo').srcObject = localStream;
+
+  // Aggressive initial keyframe burst so the remote peer gets at least one keyframe
+  forceKey      = true;
+  burstKeyframes = INIT_BURST;
+
+  startVideoEncoder();
+  startAudioEncoder();
+}
+
+function startVideoEncoder() {
+  const track = localStream?.getVideoTracks()[0];
+  if (!track) return;
+
+  videoEncoder = new VideoEncoder({
+    output: chunk => sendVideoChunk(chunk),
+    error:  ()    => {}
+  });
+  videoEncoder.configure({ codec:'vp8', width:640, height:360, bitrate:600_000, framerate:24, latencyMode:'realtime' });
+
+  const proc = new MediaStreamTrackProcessor({ track });
+  videoReader = proc.readable.getReader();
+
+  (async () => {
+    while (videoEncoder && videoEncoder.state === 'configured') {
+      const { value:frame, done } = await videoReader.read();
+      if (done) break;
+      if (!videoOff && videoEncoder.state === 'configured') {
+        let isKey = (frameCtr++ % KEYFRAME_INT === 0);
+        if (forceKey || burstKeyframes > 0) {
+          isKey = true; forceKey = false;
+          if (burstKeyframes > 0) burstKeyframes--;
+        }
+        if (videoEncoder.encodeQueueSize < 4)
+          videoEncoder.encode(frame, { keyFrame:isKey });
+      }
+      frame.close();
+    }
+  })();
+}
+
+function sendVideoChunk(chunk) {
+  if (!dgramWriter || callState !== S.CONNECTED) return;
+  const seq  = frameSeq++ & 0xFFFF;
+  const isKey = chunk.type === 'key';
+  const data  = new Uint8Array(chunk.byteLength);
+  chunk.copyTo(data);
+
+  const numChunks = Math.ceil(data.length / MAX_PAYLOAD) || 1;
+  for (let i=0; i<numChunks; i++) {
+    const slice = data.subarray(i*MAX_PAYLOAD, (i+1)*MAX_PAYLOAD);
+    const pkt   = new Uint8Array(HDR_VIDEO + slice.length);
+    const dv    = new DataView(pkt.buffer);
+    dv.setUint8 (0, TYPE_VIDEO);
+    dv.setUint32(1, myId,      false);
+    dv.setUint16(5, seq,       false);
+    dv.setUint8 (7, i);
+    dv.setUint8 (8, numChunks);
+    dv.setUint8 (9, isKey ? 1 : 0);
+    pkt.set(slice, HDR_VIDEO);
+    dgramWriter.write(pkt).catch(()=>{});
+  }
+}
+
+function startAudioEncoder() {
+  const track = localStream?.getAudioTracks()[0];
+  if (!track) return;
+
+  audioEncoder = new AudioEncoder({
+    output: chunk => {
+      if (isMuted || !dgramWriter || callState !== S.CONNECTED) return;
+      const data = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(data);
+      const pkt = new Uint8Array(HDR_AUDIO + data.length);
+      const dv  = new DataView(pkt.buffer);
+      dv.setUint8 (0, TYPE_AUDIO);
+      dv.setUint32(1, myId, false);
+      dv.setUint32(5, (chunk.timestamp/1000) & 0xFFFFFFFF, false);
+      pkt.set(data, HDR_AUDIO);
+      dgramWriter.write(pkt).catch(()=>{});
+    },
+    error: () => {}
+  });
+  audioEncoder.configure({ codec:'opus', sampleRate:48000, numberOfChannels:1, bitrate:32000 });
+
+  const proc = new MediaStreamTrackProcessor({ track });
+  audioReader = proc.readable.getReader();
+
+  (async () => {
+    while (audioEncoder && audioEncoder.state === 'configured') {
+      const { value:aud, done } = await audioReader.read();
+      if (done) break;
+      if (!isMuted && audioEncoder.state === 'configured') audioEncoder.encode(aud);
+      aud.close();
+    }
+  })();
+}
+
+async function readDatagrams() {
+  const reader = transport.datagrams.readable.getReader();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value || value.length < 2) continue;
+
+      const type = value[0];
+      const dv   = new DataView(value.buffer, value.byteOffset);
+
+      if (type === TYPE_VIDEO && value.length > HDR_VIDEO) {
+        const sender = dv.getUint32(1, false);
+        if (sender !== activePeerId || !activePeer) continue;
+        activePeer.receiveVideo(
+          dv.getUint16(5,false), dv.getUint8(7), dv.getUint8(8),
+          dv.getUint8(9) === 1, value.slice(HDR_VIDEO)
+        );
+      } else if (type === TYPE_AUDIO && value.length > HDR_AUDIO) {
+        const sender = dv.getUint32(1, false);
+        if (sender !== activePeerId || !activePeer) continue;
+        activePeer.receiveAudio(dv.getUint32(5,false)*1000, value.slice(HDR_AUDIO));
+      }
+    }
+  } catch(_) {}
+}
+
+// ═══ CONTROLS ═════════════════════════════════════════════════════════════════
+$('btnMute').onclick = () => {
+  isMuted = !isMuted;
+  $('btnMute').classList.toggle('on', isMuted);
+  $('muteLabel').innerText = isMuted ? 'Sessiz' : 'Mikrofon';
+};
+
+$('btnVidToggle').onclick = () => {
+  videoOff = !videoOff;
+  localStream?.getVideoTracks().forEach(t => t.enabled = !videoOff);
+  $('btnVidToggle').classList.toggle('on', videoOff);
+  $('vidLabel').innerText = videoOff ? 'Kapalı' : 'Kamera';
+};
+
+// ═══ CHAT ═════════════════════════════════════════════════════════════════════
+$('btnSend').onclick  = doChat;
+$('chatInput').onkeydown = e => { if (e.key==='Enter') doChat(); };
+
+function doChat() {
+  const inp  = $('chatInput');
+  const text = inp.value.trim();
+  if (!text || !sigWriter) return;
+  sendSig({ type:'chat', text });
+  appendChat('Sen', text, 'out');
+  inp.value = '';
+}
+
+function appendChat(sender, text, type) {
+  const msgs = $('chatMsgs');
+  const el   = document.createElement('div');
+  el.className = `chat-bubble ${type}`;
+  const safe = text.replace(/</g,'&lt;');
+  el.innerHTML = type==='out' ? safe : `<strong>${sender}</strong>${safe}`;
+  msgs.appendChild(el);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function appendSys(text) {
+  const msgs = $('chatMsgs');
+  const el   = document.createElement('div');
+  el.className = 'chat-sys';
+  el.innerText = text;
+  msgs.appendChild(el);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+// ═══ LOCAL PIP DRAGGING ═══════════════════════════════════════════════════════
+(function initDrag() {
+  const pip = $('localPip');
+  let dragging=false, ox=0, oy=0;
+  pip.addEventListener('mousedown', e => {
+    dragging=true; ox=e.clientX-pip.offsetLeft; oy=e.clientY-pip.offsetTop;
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const parent = pip.parentElement.getBoundingClientRect();
+    const x = Math.max(0, Math.min(e.clientX-ox, parent.width -pip.offsetWidth));
+    const y = Math.max(0, Math.min(e.clientY-oy, parent.height-pip.offsetHeight));
+    pip.style.left=`${x}px`; pip.style.top=`${y}px`;
+    pip.style.right='auto';  pip.style.bottom='auto';
+  });
+  document.addEventListener('mouseup', ()=>{ dragging=false; });
+})();
+
+// ═══ AUTH ═════════════════════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', async () => {
+  try {
+    const res  = await fetch('/api/me');
+    const data = await res.json();
+    if (data.status === 'success') loginSuccess(data.user.id, data.user.name, data.token);
+  } catch(_) {}
+});
+
+$('btnLogin').onclick = async () => {
+  const u = $('inputUser').value.trim();
+  const p = $('inputPass').value.trim();
+  $('loginErr').style.display = 'none';
+  if (!u||!p) { showErr('Kullanıcı adı ve şifre gerekli.'); return; }
+  try {
+    const res  = await fetch('/api/login', {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ username:u, password:p })
+    });
+    const data = await res.json();
+    if (data.status === 'success') loginSuccess(data.user.id, data.user.name, data.token);
+    else showErr(data.message || 'Giriş başarısız.');
+  } catch(_) { showErr('Sunucuya bağlanılamıyor.'); }
+};
+
+$('btnLogout').onclick = async () => {
+  await fetch('/api/logout', { method:'POST' });
+  location.reload();
+};
+
+['inputUser','inputPass'].forEach(id => {
+  $(id).onkeydown = e => { if (e.key==='Enter') $('btnLogin').click(); };
+});
+
+function showErr(msg) {
+  const el = $('loginErr');
+  el.innerText = msg;
+  el.style.display = 'block';
+}
+
+function loginSuccess(id, name, token) {
+  myId=id; myName=name; jwtToken=token;
+  $('loginOverlay').style.display = 'none';
+  $('app').style.display = 'flex';
+  $('myAvatar').innerText = initials(name);
+  $('myAvatar').style.background = avatarColor(id);
+  $('myName').innerText = name;
+  connectWT();
+}
+</script>
+</body>
+</html>

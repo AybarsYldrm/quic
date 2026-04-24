@@ -112,19 +112,45 @@ function decodeHuffman(buf) {
   const root = _buildTree();
   const out  = [];
   let node   = root;
+  let tailBits = 0;   // bits consumed since last complete symbol
+  let tailVal  = 0;   // those bits, MSB-first
 
   for (let i = 0; i < buf.length; i++) {
     const byte = buf[i];
     for (let bit = 7; bit >= 0; bit--) {
-      node = ((byte >>> bit) & 1) ? node.r : node.l;
-      if (!node) return Buffer.from(out).toString('utf8');
+      const b = (byte >>> bit) & 1;
+      node = b ? node.r : node.l;
+      if (!node) {
+        throw new Error('QPACK Huffman: invalid code path');
+      }
+      tailVal = (tailVal << 1) | b;
+      tailBits++;
       if (node.sym !== undefined) {
-        if (node.sym === 256) return Buffer.from(out).toString('utf8'); // EOS
+        if (node.sym === 256) {
+          // RFC 7541 §5.2: EOS symbol MUST NOT appear in a valid stream.
+          throw new Error('QPACK Huffman: EOS symbol in stream');
+        }
         out.push(node.sym);
         node = root;
+        tailBits = 0;
+        tailVal  = 0;
       }
     }
   }
+
+  // RFC 7541 §5.3: when the stream ends mid-symbol, the remaining bits
+  // must be (a) strictly shorter than 8 and (b) the MSB prefix of the
+  // EOS code — i.e. all 1-bits.
+  if (tailBits > 0) {
+    if (tailBits >= 8) {
+      throw new Error('QPACK Huffman: padding longer than 7 bits');
+    }
+    const expected = (1 << tailBits) - 1; // tailBits ones
+    if (tailVal !== expected) {
+      throw new Error('QPACK Huffman: non-EOS padding bits');
+    }
+  }
+
   return Buffer.from(out).toString('utf8');
 }
 
@@ -367,11 +393,9 @@ function decodeString(buf, offset) {
   const strBuf = buf.subarray(start, start + strLen);
   let value;
   if (isHuffman) {
-    try {
-      value = decodeHuffman(strBuf);
-    } catch (e) {
-      value = strBuf.toString('utf8');
-    }
+    // Let the error bubble up so the QPACK decoder can surface
+    // QPACK_DECOMPRESSION_FAILED instead of returning garbage.
+    value = decodeHuffman(strBuf);
   } else {
     value = strBuf.toString('utf8');
   }

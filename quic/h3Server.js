@@ -48,8 +48,7 @@ app.post('/api/login', (req, res) => {
     const user = auth.authenticate(body.username, body.password);
     if (user) {
         const token = auth.signJWT({ ...user, exp: Date.now() + 86400000 });
-        const cookieToken = Buffer.from(token, 'utf8').toString('hex');
-        res.set('Set-Cookie', `access=${cookieToken}; Path=/; HttpOnly; SameSite=Lax; Secure`);
+        res.set('Set-Cookie', `access=${token}; Path=/; HttpOnly; SameSite=Lax; Secure`);
         return res.json({ status: 'success', token });
     }
     res.status(401).json({ status: 'error', message: 'Hatalı giriş' });
@@ -59,8 +58,7 @@ app.get('/api/me', (req, res) => {
     const cookies = auth.parseCookies(req.headers.cookie || req.headers.Cookie);
     if (cookies.access) {
         try {
-            const token = Buffer.from(cookies.access, 'hex').toString('utf8');
-            const payload = auth.verifyJWT(token);
+            const payload = auth.verifyJWT(cookies.access);
             if (payload) return res.json({ status: 'success', user: payload });
         } catch (e) {}
     }

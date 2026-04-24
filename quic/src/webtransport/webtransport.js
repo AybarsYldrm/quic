@@ -111,6 +111,7 @@ class WebTransportSession extends EventEmitter {
 
     const responseHeaders = {
       'sec-webtransport-http3-draft': 'draft02',
+      'sec-webtransport-http3-draft02': '?1',
       'capsule-protocol': '?1',
       ...headers,
     };

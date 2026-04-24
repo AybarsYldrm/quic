@@ -64,7 +64,12 @@ class Http2FallbackGateway extends EventEmitter {
 
                 // 1. WebTransport Kontrolü (Router'a asla gitmez)
                 if (method === 'CONNECT' && protocol === 'webtransport') {
-                    this.emit('webtransport', req, h3, conn);
+                    try {
+                        this.emit('webtransport', req, h3, conn);
+                    } catch (err) {
+                        log.error('WebTransport handler error:', err.message);
+                        try { req.respond(500).end(); } catch (_) {}
+                    }
                     return;
                 }
 

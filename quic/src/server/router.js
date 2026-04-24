@@ -14,9 +14,16 @@ const earlyDataPolicy = composePolicy({
 });
 
 class Router {
-  constructor() {
+  constructor(options = {}) {
     this.routes = [];
     this.middleware = [];
+    this.altSvcPort = options.altSvcPort || 443;
+    this.cors = options.cors !== false ? {
+      origin: (options.cors && options.cors.origin) || '*',
+      methods: (options.cors && options.cors.methods) || 'GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS',
+      headers: (options.cors && options.cors.headers) || 'Content-Type, Authorization, Cookie, X-Requested-With',
+      maxAge:  (options.cors && options.cors.maxAge)  || 86400,
+    } : null;
   }
 
   use(pathOrFn, fn) {
@@ -61,12 +68,14 @@ class Router {
     if (quicConn && req.raw && req.raw.stream) {
       if (quicConn.is0RTT && quicConn.is0RTT(req.raw.stream.id)) {
         
-        // İleride tls-engine'den alacağımız bilet kimliği (nonce). Şimdilik stream ID fallback'li.
-        const ticketNonce = typeof quicConn.get0RTTNonce === 'function' 
-          ? quicConn.get0RTTNonce() 
-          : String(req.raw.stream.id);
-        
-        const ctx = { ticketNonce };
+        // Real ticket-bound nonce from the TLS engine. If the connection
+        // has no ticket nonce we skip replay keying — the method/body
+        // safety check in composePolicy still applies.
+        const ticketNonce = typeof quicConn.get0RTTNonce === 'function'
+          ? quicConn.get0RTTNonce()
+          : null;
+
+        const ctx = ticketNonce ? { ticketNonce } : {};
         const policyResult = earlyDataPolicy(req, ctx);
 
         if (policyResult.accept) {
@@ -82,6 +91,37 @@ class Router {
           });
           return; // İşlemi burada bitir
         }
+      }
+    }
+
+    // ==============================================================
+    // PRODUCTION DEFAULTS: Alt-Svc broadcast + CORS preflight
+    // ==============================================================
+    if (!res._headers['alt-svc']) {
+      res.set('alt-svc', `h3=":${this.altSvcPort}"; ma=86400`);
+    }
+    if (this.cors && !res._headers['access-control-allow-origin']) {
+      res.set('access-control-allow-origin', this.cors.origin);
+      res.set('vary', 'Origin');
+    }
+
+    // Routes that the application registered explicitly still win; only
+    // short-circuit OPTIONS when no route handler declared it.
+    if (method === 'OPTIONS' && this.cors) {
+      let explicit = false;
+      for (const route of this.routes) {
+        if (route.method !== 'OPTIONS' && route.method !== '*') continue;
+        if (route.regex.test(pathname)) { explicit = true; break; }
+      }
+      if (!explicit) {
+        res.set('access-control-allow-methods', this.cors.methods);
+        res.set('access-control-allow-headers',
+          req.headers['access-control-request-headers'] || this.cors.headers);
+        res.set('access-control-max-age', String(this.cors.maxAge));
+        res.set('content-length', '0');
+        res._headersSent = true;
+        h3req.respond(204, res._headers).end();
+        return;
       }
     }
 

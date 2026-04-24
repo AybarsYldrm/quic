@@ -467,29 +467,47 @@ class H3Request extends EventEmitter {
 
     const allHeaders = [[':status', String(statusCode)]];
     const mergedHeaders = { ...this._responseHeaders, ...headers };
-    
+
     for (const [k, v] of Object.entries(mergedHeaders)) {
       allHeaders.push([k.toLowerCase(), String(v)]);
     }
 
     const { data: encoded } = this.h3.encoder.encode(allHeaders);
-    this.stream.write(encodeH3Frame(H3_FRAME.HEADERS, encoded));
     this._headersSent = true;
+    this._safeWrite(encodeH3Frame(H3_FRAME.HEADERS, encoded));
     return this;
   }
 
   sendData(data) {
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(String(data));
     if (buf.length === 0) return this; // Boş frame kalkanı
-    this.stream.write(encodeH3Frame(H3_FRAME.DATA, buf));
+    this._safeWrite(encodeH3Frame(H3_FRAME.DATA, buf));
     return this;
   }
 
   end(data) {
     if (!this._headersSent) this.respond(200);
     if (data) this.sendData(data);
-    this.stream.end();
+    this._safeEnd();
     return this;
+  }
+
+  _safeWrite(buf) {
+    try {
+      this.stream.write(buf);
+    } catch (e) {
+      // Peer may have RST'd the stream between our respond() and sendData().
+      // Swallow — the stream layer already emits an error event elsewhere.
+      if (this.h3 && this.h3.log) this.h3.log.debug('H3 stream write failed:', e.message);
+    }
+  }
+
+  _safeEnd() {
+    try {
+      this.stream.end();
+    } catch (e) {
+      if (this.h3 && this.h3.log) this.h3.log.debug('H3 stream end failed:', e.message);
+    }
   }
 
   write(data) {
@@ -500,7 +518,7 @@ class H3Request extends EventEmitter {
 
   endRequest(data) {
     if (data) this.write(data);
-    this.stream.end();
+    this._safeEnd();
     return this;
   }
 

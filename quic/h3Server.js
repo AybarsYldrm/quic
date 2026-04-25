@@ -44,11 +44,12 @@ app.get('/webtransport', (req, res) => res.html(WT_HTML));
 
 app.post('/api/login', (req, res) => {
     const body = req.json();
+    if (!body) return res.status(400).json({ status: 'error', message: 'Geçersiz istek' });
     const user = auth.authenticate(body.username, body.password);
     if (user) {
         const token = auth.signJWT({ ...user, exp: Date.now() + 86400000 });
-        res.set('Set-Cookie', `access=${token}; Path=/; HttpOnly; SameSite=Lax; Secure`);
-        return res.json({ status: 'success', token });
+        res.set('Set-Cookie', `access=${token}; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax; Secure`);
+        return res.json({ status: 'success', token, user });
     }
     res.status(401).json({ status: 'error', message: 'Hatalı giriş' });
 });
@@ -58,10 +59,15 @@ app.get('/api/me', (req, res) => {
     if (cookies.access) {
         try {
             const payload = auth.verifyJWT(cookies.access);
-            if (payload) return res.json({ status: 'success', user: payload });
+            if (payload) return res.json({ status: 'success', token: cookies.access, user: payload });
         } catch (e) {}
     }
     res.status(401).json({ status: 'error' });
+});
+
+app.post('/api/logout', (req, res) => {
+    res.set('Set-Cookie', 'access=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax; Secure');
+    res.json({ status: 'success' });
 });
 
 // =====================================================================

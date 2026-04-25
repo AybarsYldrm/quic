@@ -17,6 +17,7 @@ class QuicClient extends EventEmitter {
     this.version = options.version || QUIC_VERSION_1;
     this.transportParams = options.transportParams || {};
     this.keepaliveInterval = options.keepaliveInterval || 0;
+    this.connectTimeout = options.connectTimeout || 15000;
 
     // mTLS options
     this.cert = options.cert || null;
@@ -37,21 +38,28 @@ class QuicClient extends EventEmitter {
 
   connect() {
     return new Promise((resolve, reject) => {
+      let settled = false;
+      let timer = null;
+
+      const settle = (fn, arg) => {
+        if (settled) return;
+        settled = true;
+        if (timer) { clearTimeout(timer); timer = null; }
+        fn(arg);
+      };
+
       this.socket = dgram.createSocket('udp4');
 
-      this.socket.on('message', (msg, rinfo) => {
+      this.socket.on('message', (msg) => {
         this.stats.packetsReceived++;
-        if (this.connection) {
-          this.connection.receivePacket(msg);
-        }
+        if (this.connection) this.connection.receivePacket(msg);
       });
 
       this.socket.on('error', (err) => {
         this.emit('error', err);
-        reject(err);
+        settle(reject, err);
       });
 
-      // Bind to random port
       this.socket.bind(0, () => {
         const scid = generateConnectionId(8);
 
@@ -63,46 +71,44 @@ class QuicClient extends EventEmitter {
           alpn: this.alpn,
           transportParams: this.transportParams,
           keepaliveInterval: this.keepaliveInterval,
-          // mTLS options
           clientCert: this.cert,
           clientKey: this.key,
           ca: this.ca,
           rejectUnauthorized: this.rejectUnauthorized,
-          sendDatagram: (data, addr, port) => {
-            this._sendRaw(data, this.host, this.port);
-          },
+          sendDatagram: (data) => this._sendRaw(data, this.host, this.port),
           remoteAddress: this.host,
           remotePort: this.port,
         });
 
         this.connection.on('connected', () => {
           this.emit('connected', this.connection);
-          resolve(this.connection);
+          settle(resolve, this.connection);
         });
-
-        this.connection.on('stream', (stream) => {
-          this.emit('stream', stream);
-        });
-
-        this.connection.on('close', (errorCode, reason) => {
-          this.emit('close', errorCode, reason);
-        });
-
-        this.connection.on('closed', () => {
-          this.emit('closed');
-        });
-
-        this.connection.on('error', (err) => {
+        this.connection.on('stream', (stream) => this.emit('stream', stream));
+        this.connection.on('close',  (code, reason) => this.emit('close', code, reason));
+        this.connection.on('closed', () => this.emit('closed'));
+        this.connection.on('error',  (err) => {
           this.emit('error', err);
-          reject(err);
+          settle(reject, err);
         });
+        this.connection.on('versionNegotiation', (v) => this.emit('versionNegotiation', v));
 
-        this.connection.on('versionNegotiation', (versions) => {
-          this.emit('versionNegotiation', versions);
-        });
+        if (this.connectTimeout > 0) {
+          timer = setTimeout(() => {
+            const err = new Error(`QUIC connect timed out after ${this.connectTimeout}ms`);
+            try { this.connection && this.connection.close(0, 'connect timeout'); } catch (_) {}
+            this.emit('error', err);
+            settle(reject, err);
+          }, this.connectTimeout);
+          if (typeof timer.unref === 'function') timer.unref();
+        }
 
-        // Initiate handshake
-        this.connection.connect();
+        try {
+          this.connection.connect();
+        } catch (err) {
+          this.emit('error', err);
+          settle(reject, err);
+        }
       });
     });
   }

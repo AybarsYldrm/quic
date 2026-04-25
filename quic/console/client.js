@@ -16,6 +16,7 @@ async function main() {
     port: PORT,
     serverName: SERVER_NAME,
     alpn: ['h3'],
+    connectTimeout: 15000,
     transportParams: {
       maxIdleTimeout: 30000,
       initialMaxData: 1048576,
@@ -26,6 +27,8 @@ async function main() {
   });
 
   client.on('error', (err) => {
+    // QuicClient.connect() rejects with this same error; just log
+    // late errors (peer-initiated CONNECTION_CLOSE, network drop).
     console.error('[CLIENT] Hata:', err.message);
   });
 

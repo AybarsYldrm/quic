@@ -939,13 +939,15 @@ _deriveHandshakeKeys(sharedSecret) {
     });
   };
  
-  if (this.isServer) {
-    this.emit('handshakeKeys', {
-      level: ENCRYPTION_LEVEL.HANDSHAKE,
-      cipher: SUITE_INFO[this.cipherSuite],
-      ...this.keys[ENCRYPTION_LEVEL.HANDSHAKE],
-    });
-  }
+  // Both sides need handshake keys to decrypt the peer's HANDSHAKE
+  // packets. The client previously skipped this emit and stalled
+  // because it had no way to decrypt the server's Cert / CertVerify /
+  // Finished frames.
+  this.emit('handshakeKeys', {
+    level: ENCRYPTION_LEVEL.HANDSHAKE,
+    cipher: SUITE_INFO[this.cipherSuite],
+    ...this.keys[ENCRYPTION_LEVEL.HANDSHAKE],
+  });
 }
 
   _deriveApplicationKeys() {

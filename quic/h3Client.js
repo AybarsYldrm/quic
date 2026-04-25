@@ -17,6 +17,7 @@ async function lowLevelDemo() {
     port: PORT,
     serverName: SERVER_NAME,
     alpn: ['h3'],
+    connectTimeout: 15000,
     transportParams: {
       maxIdleTimeout: 30000,
       initialMaxData: 1048576,
@@ -28,6 +29,8 @@ async function lowLevelDemo() {
   });
 
   client.on('error', (err) => {
+    // QuicClient already rejects connect() with this error, so just log
+    // post-connect failures (e.g. peer-initiated CONNECTION_CLOSE).
     console.error('[CLIENT] Error:', err.message);
   });
 

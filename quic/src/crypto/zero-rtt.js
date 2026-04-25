@@ -3,9 +3,9 @@
 const crypto = require('crypto');
 const { hkdfExtract, hkdfExpandLabel, derivePacketKeys } = require('./quic-crypto');
 const { ENCRYPTION_LEVEL } = require('../constants');
-const { createLogger } = require('../utils/logger'); // ✅ EKLENDİ
+const { createLogger } = require('../utils/logger');
 
-const log = createLogger('0-RTT'); // ✅ EKLENDİ
+const log = createLogger('0-RTT');
 
 class SessionTicket {
   constructor(options = {}) {
@@ -60,9 +60,7 @@ class SessionTicket {
   }
 }
 
-/**
- * ✅ DÜZELTİLDİ: keyLen parametresi eklendi (ChaCha20=32, AES-128=16, AES-256=32)
- */
+// keyLen depends on the negotiated cipher (ChaCha20 / AES-256 = 32, AES-128 = 16).
 function deriveZeroRTTKeys(hashAlgo, psk, clientHelloHash, keyLen = 16) {
   const hashLen = hashAlgo === 'sha384' ? 48 : 32;
 
@@ -72,7 +70,6 @@ function deriveZeroRTTKeys(hashAlgo, psk, clientHelloHash, keyLen = 16) {
     hashAlgo, earlySecret, 'c e traffic', clientHelloHash, hashLen
   );
 
-  // ✅ keyLen artık parametre olarak geliyor — ChaCha20 ve AES-256 için 32
   const keys = derivePacketKeys(hashAlgo, clientEarlySecret, keyLen);
 
   return {
@@ -93,7 +90,7 @@ function derivePSK(hashAlgo, ticketKey, encryptedTicket) {
   log.trace('[0-RTT] Verifying ticket with key', ticketKey.toString('hex').slice(0, 8) + '…');
   try {
     if (encryptedTicket.length < 28) {
-      log.warn('[0-RTT] Bilet çok kısa, geçersiz.');
+      log.warn('[0-RTT] Ticket too short, rejecting');
       return null;
     }
 
@@ -108,12 +105,10 @@ function derivePSK(hashAlgo, ticketKey, encryptedTicket) {
     const psk  = decrypted.subarray(0, 32);
     const meta = JSON.parse(decrypted.subarray(32).toString('utf8'));
 
-    log.debug(`[0-RTT] Bilet çözüldü. SNI: ${meta.sni}, Suite: ${meta.suite}`);
-
-    // ✅ meta'yı da döndürüyoruz — suite (0x1303 vb.) keyLen için gerekli
+    log.debug(`[0-RTT] Ticket decrypted (sni=${meta.sni} suite=0x${Number(meta.suite).toString(16)})`);
     return { psk, meta };
   } catch (e) {
-    log.warn('[0-RTT] Bilet çözme hatası:', e.message);
+    log.warn('[0-RTT] Ticket decryption failed:', e.message);
     return null;
   }
 }

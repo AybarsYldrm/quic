@@ -48,14 +48,14 @@ const SIG_RSA_PSS_RSAE_SHA256 = 0x0804;
 
 const QUIC_TP_EXTENSION = 0x0039;
 
-// Kriptografik Parametreler
+// Cipher-suite parameters (RFC 8446 §B.4 / RFC 9001).
 const SUITE_INFO = {
   0x1301: { name: 'TLS_AES_128_GCM_SHA256',       hash: 'sha256', hashLen: 32, keyLen: 16, aead: 'aes-128-gcm',       hp: 'aes-128-ecb' },
   0x1302: { name: 'TLS_AES_256_GCM_SHA384',       hash: 'sha384', hashLen: 48, keyLen: 32, aead: 'aes-256-gcm',       hp: 'aes-256-ecb' },
   0x1303: { name: 'TLS_CHACHA20_POLY1305_SHA256', hash: 'sha256', hashLen: 32, keyLen: 32, aead: 'chacha20-poly1305', hp: 'chacha20'    },
 };
 
-// İnsan dilindeki isimlerin Hex karşılıkları
+// Human-friendly aliases for the four-digit IANA cipher-suite codes.
 const CIPHER_ALIASES = {
   'TLS_AES_128_GCM_SHA256': 0x1301,
   'AES_128': 0x1301,
@@ -83,7 +83,7 @@ class TLSEngine extends EventEmitter {
     this.clientKey = options.clientKey || null;
 
     // ==============================================================
-    // DİNAMİK CİPHER SUITE OKUMA VE ÇEVİRME
+    // Dynamic cipher-suite resolution (alias -> RFC code)
     // ==============================================================
     const rawCiphers = options.cipherSuites || options.allowedCiphers || ['CHACHA20', 'AES_256', 'AES_128'];
     
@@ -103,8 +103,8 @@ class TLSEngine extends EventEmitter {
     this.selectedAlpn   = null;
     if (options.ticketKey) {
       this._ticketKey = Buffer.isBuffer(options.ticketKey)
-        ? options.ticketKey                          // Buffer ise doğrudan kullan
-        : Buffer.from(options.ticketKey, 'hex');     // String ise hex decode
+        ? options.ticketKey                          // already a Buffer
+        : Buffer.from(options.ticketKey, 'hex');     // hex string -> Buffer
     } else {
       this._ticketKey = crypto.randomBytes(16);
     }
@@ -117,18 +117,18 @@ class TLSEngine extends EventEmitter {
     this.clientSessionId = Buffer.alloc(0);
 
     this.state = 'INIT';
-    
-    // Kripto Değişkenleri
+
+    // Crypto state populated by _applyCipherSuite()
     this.cipherSuite = null;
     this.hashAlgo = null;
     this.hashLen = null;
     this.keyLen = null;
 
-    // Eğer client ise başlangıçta listesindeki ilk algoritmaya kilitlenir
     if (!this.isServer) {
+      // Client: lock to the first allowed cipher; server picks for real later.
       this._applyCipherSuite(this.allowedCiphers[0]);
     } else {
-      // Server ise ClientHello gelene kadar bekler, varsayılan sha256
+      // Server: wait for ClientHello before locking; default hash to sha256.
       this.hashAlgo = 'sha256';
       this.hashLen = 32;
     }
@@ -165,7 +165,7 @@ class TLSEngine extends EventEmitter {
     this.peerIdentity = null;
     this._peerCertDerList = [];
 
-    // Sertifika Doğrulamaları
+    // Certificate validations
     if (this.cert && this.key) {
       const keyMatch = CertificateValidator.validateKeyMatch(this.cert, this.key);
       if (!keyMatch.valid) {
@@ -179,7 +179,7 @@ class TLSEngine extends EventEmitter {
   }
 
   // ==========================================
-  // DİNAMİK CİPHER UYGULAYICI
+  // Dynamic cipher-suite applier
   // ==========================================
   _applyCipherSuite(suiteId) {
     const info = SUITE_INFO[suiteId];
@@ -198,6 +198,13 @@ class TLSEngine extends EventEmitter {
   // ==========================================
 
   generateClientHello() {
+    // Idempotent on repeat calls: when QUIC receives a Retry it must
+    // re-send the same ClientHello with a new INITIAL token in the
+    // packet header (RFC 9001 §5.6). Returning the cached bytes keeps
+    // the TLS transcript identical on both flights.
+    if (this._cachedClientHello) {
+      return this._cachedClientHello;
+    }
     this.clientRandom = crypto.randomBytes(32);
     const extensions = [];
 
@@ -257,7 +264,7 @@ class TLSEngine extends EventEmitter {
 
     const extBuf = Buffer.concat(extensions);
     
-    // DINAMİK CIPHER LİSTESİ YAZIMI
+    // Build the cipher-suite list dynamically
     const csBuffer = Buffer.alloc(2 + (this.allowedCiphers.length * 2));
     csBuffer.writeUInt16BE(this.allowedCiphers.length * 2, 0);
     for (let i = 0; i < this.allowedCiphers.length; i++) {
@@ -283,7 +290,8 @@ class TLSEngine extends EventEmitter {
     this._addToTranscript(msg);
 
     this.state = 'WAIT_SERVER_HELLO';
-    return { level: ENCRYPTION_LEVEL.INITIAL, data: msg };
+    this._cachedClientHello = { level: ENCRYPTION_LEVEL.INITIAL, data: msg };
+    return this._cachedClientHello;
   }
 
   generateServerHello() {
@@ -312,7 +320,7 @@ class TLSEngine extends EventEmitter {
       this.serverRandom,
       Buffer.from([sessionId.length]),
       sessionId,
-      // Seçilen Cipher Suite'i yazıyoruz
+      // Write the chosen cipher suite
       Buffer.from([this.cipherSuite >> 8, this.cipherSuite & 0xff]),
       Buffer.from([0x00]),
       Buffer.alloc(2),
@@ -473,14 +481,14 @@ class TLSEngine extends EventEmitter {
     const csLen = body.readUInt16BE(off); off += 2;
     if (off + csLen > body.length) throw new Error('Truncated ClientHello Ciphers array');
     
-    // Gelen Client Cipher'larını oku
+    // Read the cipher list offered by the client
     const clientCiphers = [];
     for (let i = 0; i < csLen; i += 2) {
       clientCiphers.push(body.readUInt16BE(off + i));
     }
     off += csLen;
 
-    // Ortak bir cipher seç (Kendi önceliğimize göre)
+    // Pick a mutually supported cipher in our preference order
     const chosenCipher = this.allowedCiphers.find(c => clientCiphers.includes(c));
     if (!chosenCipher) {
       throw new Error(`TLS Fatal: No mutually supported cipher suites.`);
@@ -512,7 +520,7 @@ class TLSEngine extends EventEmitter {
     
     if (off + 2 > body.length) throw new Error('Truncated ServerHello cipher');
     
-    // Server'ın seçtiği cipher'ı oku
+    // Read the cipher the server picked
     const serverSelectedCipher = body.readUInt16BE(off); off += 2;
     if (!this.allowedCiphers.includes(serverSelectedCipher)) {
       throw new Error(`TLS Fatal: Server selected unsupported cipher 0x${serverSelectedCipher.toString(16)}`);
@@ -718,7 +726,7 @@ class TLSEngine extends EventEmitter {
       suite: this.cipherSuite,
       alpn: this.selectedAlpn || this.alpn[0],
       iat: Date.now(),
-      sni: this.serverName,
+      sni: this.peerServerName || this.serverName,
     }), 'utf8');
 
     const iv = crypto.randomBytes(12);
@@ -880,7 +888,7 @@ class TLSEngine extends EventEmitter {
   }
 
   // ==========================================
-  // KEY DERIVATION (DİNAMİK KEYLEN ALIYOR VE EMIT EDİYOR)
+  // Key derivation (passes dynamic keyLen and emits handshakeKeys)
   // ==========================================
 _deriveHandshakeKeys(sharedSecret) {
   this.earlySecret = hkdfExtract(
@@ -920,19 +928,18 @@ _deriveHandshakeKeys(sharedSecret) {
     serverKeys: derivePacketKeys(this.hashAlgo, this.serverHandshakeSecret, this.keyLen),
   };
  
-  // ✅ DÜZELTİLDİ: this.keyLen eklendi (ChaCha20=32, AES=16)
+  // keyLen comes from the negotiated suite (ChaCha20=32, AES-128=16)
   const zeroRttKeys = derivePacketKeys(
     this.hashAlgo,
     clientEarlyTrafficSecret,
-    this.keyLen  // ← BU SATIR EKSİKTİ
+    this.keyLen
   );
   this.keys[ENCRYPTION_LEVEL.ZERO_RTT] = zeroRttKeys;
  
-  // ✅ DÜZELTİLDİ: suite bilgisi event'e eklendi
-  // connection.js artık hangi cipher'ı kullanacağını biliyor
+  // The earlyKeys event carries the AEAD suite so connection.js knows which cipher to install
   const suiteAead = SUITE_INFO[this.cipherSuite]?.aead || 'aes-128-gcm';
   if (!this.accepted0RTT) {
-  // PSK yoksa normal boş-PSK early keys gönder
+  // No PSK: emit empty-PSK early keys
     this.emit('earlyKeys', {
       keys: zeroRttKeys,
       suite: suiteAead,
@@ -963,7 +970,7 @@ _deriveHandshakeKeys(sharedSecret) {
       serverKeys: derivePacketKeys(this.hashAlgo, this.serverAppSecret, this.keyLen),
     };
     
-    // BURASI ÇOK ÖNEMLİ
+    // Critical: emit application keys for connection.js
     this.emit('applicationKeys', { 
       level: ENCRYPTION_LEVEL.ONE_RTT, 
       cipher: SUITE_INFO[this.cipherSuite],
@@ -1007,7 +1014,7 @@ _handlePreSharedKeyExtension(data) {
       const { psk, meta } = result;
       this.resumedPSK = psk;
       this.accepted0RTT = true;
-      log.info('\x1b[32m[TLS] 0-RTT Bileti Kabul Edildi!\x1b[0m');
+      log.info('\x1b[32m[TLS] 0-RTT session ticket accepted\x1b[0m');
 
       const { deriveZeroRTTKeys } = require('./zero-rtt');
       const chHash = this._getTranscriptHash();
@@ -1040,7 +1047,7 @@ _handlePreSharedKeyExtension(data) {
       });
     }
   } catch (e) {
-    log.warn('[TLS] 0-RTT Bilet doğrulama hatası:', e.message);
+    log.warn('[TLS] 0-RTT ticket verification failed:', e.message);
   }
 }
 
@@ -1055,10 +1062,14 @@ _handlePreSharedKeyExtension(data) {
 
       if (type === 0x0033) {
         this._parseKeyShare(data, isServerSide);
+      } else if (type === 0x0000 && this.isServer) {
+        // server_name (SNI). Record the hostname the client asked for so
+        // we can stash it in NewSessionTicket meta and route hosts later.
+        this._parseServerName(data);
       } else if (type === 0x002a) { // early_data (42)
         this.peerAttempted0RTT = true;
-        log.debug('[TLS] İstemci 0-RTT (Early Data) deniyor.');
-      } 
+        log.debug('[TLS] Client attempting 0-RTT (Early Data)');
+      }
         else if (type === 0x0029 && this.isServer && this.enable0rtt) { // pre_shared_key (41)
         this._handlePreSharedKeyExtension(data);
       } else if (type === QUIC_TP_EXTENSION) {
@@ -1083,6 +1094,26 @@ _handlePreSharedKeyExtension(data) {
         return;
       }
       this.selectedAlpn = inter[0];
+    }
+  }
+
+  // RFC 6066 §3 server_name extension. The list contains entries of
+  // (NameType, Name); NameType=0 is host_name. We only care about that
+  // one, and we record it so NewSessionTickets carry the client's SNI
+  // for later resumption diagnostics.
+  _parseServerName(data) {
+    let off = 0;
+    if (off + 2 > data.length) return;
+    const listLen = data.readUInt16BE(off); off += 2;
+    const end = Math.min(off + listLen, data.length);
+    while (off + 3 <= end) {
+      const nameType = data[off++];
+      const nameLen  = data.readUInt16BE(off); off += 2;
+      if (off + nameLen > end) break;
+      if (nameType === 0) {
+        this.peerServerName = data.subarray(off, off + nameLen).toString('ascii');
+      }
+      off += nameLen;
     }
   }
 

@@ -445,7 +445,25 @@ class H3Request extends EventEmitter {
           case ':scheme':    this.scheme    = value; break;
           case ':authority': this.authority = value; break;
           case ':status':    this.status    = parseInt(value, 10); break;
-          default: this.headers[name] = value; break;
+          default: {
+            // RFC 9114 §4.2.1: peers may split a single Cookie header across
+            // multiple QPACK field lines; reassemble with "; " for the
+            // application layer. set-cookie keeps an array because each
+            // entry is logically a separate cookie.
+            const existing = this.headers[name];
+            if (existing === undefined) {
+              this.headers[name] = value;
+            } else if (name === 'cookie') {
+              this.headers[name] = `${existing}; ${value}`;
+            } else if (name === 'set-cookie') {
+              this.headers[name] = Array.isArray(existing)
+                ? [...existing, value]
+                : [existing, value];
+            } else {
+              this.headers[name] = `${existing}, ${value}`;
+            }
+            break;
+          }
         }
       }
       this.emit('headers', this.headers);

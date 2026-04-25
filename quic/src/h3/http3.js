@@ -497,8 +497,9 @@ class H3Request extends EventEmitter {
       this.stream.write(buf);
     } catch (e) {
       // Peer may have RST'd the stream between our respond() and sendData().
-      // Swallow — the stream layer already emits an error event elsewhere.
-      if (this.h3 && this.h3.log) this.h3.log.debug('H3 stream write failed:', e.message);
+      // Surface the failure so the caller can stop trying to write, and let
+      // the stream's own 'error' event drive the rest of the cleanup.
+      log.warn('H3 stream write failed:', e.message);
     }
   }
 
@@ -506,7 +507,7 @@ class H3Request extends EventEmitter {
     try {
       this.stream.end();
     } catch (e) {
-      if (this.h3 && this.h3.log) this.h3.log.debug('H3 stream end failed:', e.message);
+      log.warn('H3 stream end failed:', e.message);
     }
   }
 

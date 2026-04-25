@@ -113,8 +113,8 @@ function buildH3Settings(cfg = {}) {
   if (cfg.enableWebTransport) {
     s[H3_SETTINGS.ENABLE_CONNECT_PROTOCOL]   = 1;
     s[H3_SETTINGS.H3_DATAGRAM]               = 1;
-    // KRİTİK DÜZELTME: Chrome'u çökerten o devasa sayıyı (MAX_SESSIONS) sildik. 
-    // Sadece bunu göndermek tüneli açması için yeterlidir.
+    // Chrome rejects the spec-stretching MAX_SESSIONS value; advertising the
+    // ENABLE_WEBTRANSPORT setting alone is enough to bring up the tunnel.
     s[H3_SETTINGS.ENABLE_WEBTRANSPORT]       = 1;
   }
   return Object.freeze(s);
@@ -376,8 +376,14 @@ class H3Connection extends EventEmitter {
     const { data: encoded } = this.encoder.encode(allHeaders);
     stream.write(encodeH3Frame(H3_FRAME.HEADERS, encoded));
 
+    // Per-request access log: one line per round-trip, picks up the
+    // status from the first response HEADERS frame and the elapsed
+    // wall time when the stream ends.
+    const t0 = process.hrtime.bigint();
+    let bytesIn = 0;
     let responseBuf = Buffer.alloc(0);
     stream.on('data', (chunk) => {
+      bytesIn += chunk.length;
       responseBuf = Buffer.concat([responseBuf, chunk]);
       while (responseBuf.length > 0) {
         const frame = decodeH3Frame(responseBuf, 0);
@@ -386,7 +392,14 @@ class H3Connection extends EventEmitter {
         req._handleFrame(frame);
       }
     });
-    stream.on('end', () => req._handleEnd());
+    stream.on('end', () => {
+      const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+      log.info(`H3 ${method} ${path} -> ${req.status || '-'} ${bytesIn}B ${ms.toFixed(1)}ms`);
+      req._handleEnd();
+    });
+    stream.on('error', (err) => {
+      log.warn(`H3 ${method} ${path} -> error ${err.message}`);
+    });
     req._headersSent = true;
     return req;
   }
@@ -498,7 +511,7 @@ class H3Request extends EventEmitter {
 
   sendData(data) {
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(String(data));
-    if (buf.length === 0) return this; // Boş frame kalkanı
+    if (buf.length === 0) return this; // skip empty DATA frames
     this._safeWrite(encodeH3Frame(H3_FRAME.DATA, buf));
     return this;
   }

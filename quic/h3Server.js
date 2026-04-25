@@ -26,7 +26,22 @@ const app = new Router();
 const wtServer = new WebTransportServer({ maxSessions: 100 });
 
 const INDEX_HTML = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
-const WT_HTML = fs.readFileSync(path.join(__dirname, 'webtransport.html'), 'utf8');
+const WT_HTML    = fs.readFileSync(path.join(__dirname, 'webtransport.html'), 'utf8');
+const INDEX_ETAG = `"${crypto.createHash('sha1').update(INDEX_HTML).digest('hex').slice(0, 16)}"`;
+const WT_ETAG    = `"${crypto.createHash('sha1').update(WT_HTML).digest('hex').slice(0, 16)}"`;
+const STATIC_CACHE_CONTROL = 'public, max-age=300, must-revalidate';
+
+// Conditional-request short-circuit: 304 Not Modified when ETag matches.
+function serveStatic(req, res, body, etag) {
+    res.set('etag', etag);
+    res.set('cache-control', STATIC_CACHE_CONTROL);
+    res.set('vary', 'Accept-Encoding');
+    if (req.headers['if-none-match'] === etag) {
+        res.set('content-length', '0');
+        return res.status(304).end();
+    }
+    res.html(body);
+}
 
 const certData = fs.readFileSync(path.join(__dirname, 'certs', 'cert.pem'), 'utf8');
 const keyData  = fs.readFileSync(path.join(__dirname, 'certs', 'key.pem'), 'utf8');
@@ -39,19 +54,19 @@ app.use((req, res, next) => {
     next();
 });
 
-app.get('/', (req, res) => res.html(INDEX_HTML));
-app.get('/webtransport', (req, res) => res.html(WT_HTML));
+app.get('/', (req, res) => serveStatic(req, res, INDEX_HTML, INDEX_ETAG));
+app.get('/webtransport', (req, res) => serveStatic(req, res, WT_HTML, WT_ETAG));
 
 app.post('/api/login', (req, res) => {
     const body = req.json();
-    if (!body) return res.status(400).json({ status: 'error', message: 'Geçersiz istek' });
+    if (!body) return res.status(400).json({ status: 'error', message: 'Invalid request' });
     const user = auth.authenticate(body.username, body.password);
     if (user) {
         const token = auth.signJWT({ ...user, exp: Date.now() + 86400000 });
         res.set('Set-Cookie', `access=${token}; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax; Secure`);
         return res.json({ status: 'success', token, user });
     }
-    res.status(401).json({ status: 'error', message: 'Hatalı giriş' });
+    res.status(401).json({ status: 'error', message: 'Invalid credentials' });
 });
 
 app.get('/api/me', (req, res) => {
@@ -130,7 +145,7 @@ async function main() {
 
     await gateway.listen();
     console.log(`\n───────────────────────────────────────────────────`);
-    console.log(`🚀 HTTP/3 + WEBTRANSPORT SUNUCUSU AKTİF`);
+    console.log(`HTTP/3 + WebTransport server is up`);
     console.log(`📡 URL: https://${DOMAIN}:${PORT}`);
     console.log(`───────────────────────────────────────────────────\n`);
 }

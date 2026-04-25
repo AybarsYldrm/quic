@@ -1,7 +1,7 @@
 'use strict';
 
 const { createLogger } = require('../utils/logger');
-// KRİTİK EKLENTİ: Yazdığın 0-RTT güvenlik modülünü içeri alıyoruz
+// 0-RTT replay-protection helpers
 const { composePolicy, ReplayCache } = require('../crypto/early-data-policy'); 
 
 const log = createLogger('Router');
@@ -55,7 +55,7 @@ class Router {
     const rawPath = h3req.path || '/';
     const qIdx = rawPath.indexOf('?');
     
-    // Query string (?) ayrıştırması
+    // Query string (?) parsing
     const pathname = qIdx >= 0 ? rawPath.slice(0, qIdx) : rawPath;
     const queryString = qIdx >= 0 ? rawPath.slice(qIdx + 1) : '';
 
@@ -79,17 +79,17 @@ class Router {
         const policyResult = earlyDataPolicy(req, ctx);
 
         if (policyResult.accept) {
-          // Politikadan geçti: Güvenli metod, body yok, replay değil.
+          // Policy passed: safe method, no body, not a replay.
           res.set('Early-Data', '1');
         } else {
-          // Politikaya takıldı! Zinciri kes ve 425 dön.
-          log.warn(`[SECURITY] 0-RTT engellendi! Sebep: ${policyResult.reason}, Path: ${pathname}`);
-          res.status(425).json({ 
-            status: 'error', 
+          // Policy denied — break the middleware chain and return 425.
+          log.warn(`[SECURITY] 0-RTT denied (reason=${policyResult.reason}, path=${pathname})`);
+          res.status(425).json({
+            status: 'error',
             message: 'Too Early. Request not allowed in 0-RTT or replay detected.',
             reason: policyResult.reason
           });
-          return; // İşlemi burada bitir
+          return;
         }
       }
     }
@@ -127,14 +127,14 @@ class Router {
 
     const allHandlers = [];
 
-    // 1. Eşleşen Middleware'leri Topla
+    // 1. Collect matching middleware
     for (const mw of this.middleware) {
       if (!mw.path || pathname.startsWith(mw.path)) {
         allHandlers.push(mw.handler);
       }
     }
 
-    // 2. Eşleşen Rotayı Bul
+    // 2. Find matching route
     for (const route of this.routes) {
       if (route.method !== '*' && route.method !== method) continue;
       const match = route.regex.exec(pathname);
@@ -147,11 +147,11 @@ class Router {
         for (const h of route.handlers) {
           allHandlers.push(h);
         }
-        break; // İlk eşleşen rotada dur
+        break; // first match wins
       }
     }
 
-    // 3. Zinciri (Chain) Çalıştır
+    // 3. Run the handler chain
     let idx = 0;
     const next = (err) => {
       if (err) {
@@ -162,7 +162,7 @@ class Router {
         return;
       }
 
-      // 404 KONTROLÜ
+      // 404 fallback
       if (idx >= allHandlers.length) {
         if (!res._headersSent) {
           res.status(404).json({ error: 'Not Found', path: pathname });
@@ -178,7 +178,7 @@ class Router {
       }
     };
 
-    // Döngüyü başlat
+    // kick off the chain
     next();
   }
 }

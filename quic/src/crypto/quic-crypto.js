@@ -64,23 +64,23 @@ function deriveInitialSecrets(dcid, version) {
   return {
     clientInitialSecret,
     serverInitialSecret,
-    // Initial paketleri her zaman aes-128 (16 byte) kullanır
+    // Initial packets always use AES-128 (16-byte key) per RFC 9001 §5.2.
     clientKeys: derivePacketKeys('sha256', clientInitialSecret, 16),
     serverKeys: derivePacketKeys('sha256', serverInitialSecret, 16),
   };
 }
 
 // =======================================================
-// YENİ EKLENDİ: 0-RTT (EARLY DATA) KEY DERIVATION (RFC 8446/9001)
+// 0-RTT (Early Data) key derivation per RFC 8446 / 9001
 // =======================================================
 function deriveEarlySecrets(hashAlgo, psk, clientHelloHash) {
   const hashLen = hashAlgo === 'sha384' ? 48 : 32;
-  const salt = Buffer.alloc(hashLen); // 0-RTT için salt her zaman sıfırlardan oluşur
+  const salt = Buffer.alloc(hashLen); // 0-RTT salt is always all-zeros per RFC 8446 §7.1.
   
   // 1. Early Secret: HKDF-Extract(salt = 0, IKM = PSK)
   const earlySecret = hkdfExtract(hashAlgo, salt, psk);
   
-  // 2. Client Early Traffic Secret (İstemci 0-RTT verilerini bu anahtarla şifreler)
+  // 2. Client early traffic secret — client encrypts 0-RTT data with this
   const clientEarlyTrafficSecret = hkdfExpandLabel(
     hashAlgo, 
     earlySecret, 
@@ -89,14 +89,14 @@ function deriveEarlySecrets(hashAlgo, psk, clientHelloHash) {
     hashLen
   );
   
-  // 3. Paket Şifrelerini (Key, IV, HP) Çıkart (16 byte AES veya 32 byte ChaCha/AES256 için)
-  // Not: Chrome 0-RTT'yi genelde hangi Cipher ile anlaştıysa o boyutta yapar.
-  // Varsayılan AES-128 kabul edip 16 yolluyoruz; tls-engine veya quic bunu override edebilir.
+  // 3. Derive packet keys (Key, IV, HP). 16 bytes for AES-128, 32 bytes for ChaCha20 / AES-256
+  // Note: 0-RTT key length follows the negotiated cipher.
+  // Default to 16 bytes (AES-128); the TLS engine can override.
   const keyLen = 16; 
   return derivePacketKeys(hashAlgo, clientEarlyTrafficSecret, keyLen);
 }
 
-// DİNAMİK KEY LENGTH EKLENDİ (ChaCha20 ve AES-256 için 32 byte gereklidir)
+// keyLen now passed in (32 bytes required for ChaCha20 and AES-256)
 function derivePacketKeys(hash, secret, keyLen = 16) {
   const key = hkdfExpandLabel(hash, secret, 'quic key', Buffer.alloc(0), keyLen);
   const iv = hkdfExpandLabel(hash, secret, 'quic iv', Buffer.alloc(0), AEAD_IV_LENGTH); // IV hep 12 byte
@@ -111,9 +111,9 @@ function deriveNextSecret(hash, currentSecret) {
     hash === 'sha256' ? 32 : 48);
 }
 
-// ----- AEAD & Header Protection Native Node.js Sınıfları -----
+// ----- AEAD & header protection (native node:crypto) -----
 
-// Node.js'in yerleşik özellikleri kullanılıyor.
+// Native node:crypto primitives only.
 function selectCipher(suite) {
   const id = (suite || 'aes-128-gcm').toLowerCase();
 
@@ -137,7 +137,7 @@ function selectCipher(suite) {
       hpMask: (hpKey, sample) => {
         // ChaCha20 Header Protection: Node.js chacha20 16-byte IV(sample) bekler
         const cipher = crypto.createCipheriv('chacha20', hpKey, sample);
-        return cipher.update(Buffer.alloc(5, 0)); // 5 byte maske üret
+        return cipher.update(Buffer.alloc(5, 0)); // produce a 5-byte mask
       }
     };
   }
@@ -155,7 +155,7 @@ function selectCipher(suite) {
     };
   }
 
-  // Varsayılan: AES-128-GCM
+  // Default cipher: AES-128-GCM
   return {
     id: 'aes-128-gcm',
     aeadEncrypt: (key, nonce, aad, pt) => _aesAeadEncrypt('aes-128-gcm', key, nonce, aad, pt),
@@ -184,7 +184,7 @@ function _aesAeadDecrypt(algo, key, nonce, aad, ct) {
   return Buffer.concat([decipher.update(encData), decipher.final()]);
 }
 
-// ----- Yönlendirici AEAD Fonksiyonları -----
+// ----- AEAD dispatch -----
 
 function computeNonce(iv, packetNumber) {
   const nonce = Buffer.from(iv);
@@ -203,7 +203,7 @@ function computeNonce(iv, packetNumber) {
   return nonce;
 }
 
-// Artık 'algo' parametresi aes-128, aes-256 veya chacha20 string'i olarak geliyor.
+// 'algo' is one of: 'aes-128-gcm', 'aes-256-gcm', 'chacha20-poly1305'.
 function aeadEncrypt(algo, key, nonce, aad, plaintext) {
   return selectCipher(algo).aeadEncrypt(key, nonce, aad, plaintext);
 }
@@ -214,7 +214,7 @@ function aeadDecrypt(algo, key, nonce, aad, ciphertext) {
 
 // ----- Header Protection -----
 
-// 'suite' parametresi codec.js tarafından yollanıyor
+// 'suite' is forwarded by codec.js
 function applyHeaderProtection(hp, header, pnOffset, pnLength, isLongHeader, suite = 'aes-128-gcm') {
   const sampleOffset = pnOffset + 4;
   const sample = header.subarray(sampleOffset, sampleOffset + 16);
@@ -262,7 +262,7 @@ function removeHeaderProtection(hp, packet, pnOffset, isLongHeader, suite = 'aes
   return { packet: result, pnLength };
 }
 
-// Geriye Dönük Uyumluluk
+// Backwards-compat shim
 function generateHPMask(hpKey, sample) {
   return selectCipher('aes-128-gcm').hpMask(hpKey, sample);
 }
@@ -355,7 +355,7 @@ function validateToken(key, token, clientAddress, clientPort, maxAge) {
 module.exports = {
   hkdfExtract, hkdfExpandLabel, hkdfExpand,
   deriveInitialSecrets, 
-  deriveEarlySecrets, // YENİ EKLENDİ
+  deriveEarlySecrets,
   derivePacketKeys, deriveNextSecret,
   computeNonce, aeadEncrypt, aeadDecrypt,
   applyHeaderProtection, removeHeaderProtection, generateHPMask,

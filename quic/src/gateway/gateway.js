@@ -60,11 +60,11 @@ class Http2FallbackGateway extends EventEmitter {
                 req.transport = 'h3';
                 req.quicConn = conn;
 
-                // SENİN ESKİ ÇALIŞAN KODUN BİREBİR AYNISI!
+                // HTTP/3 routing entry
                 const method = (req.method || '').toUpperCase();
                 const protocol = req.headers && req.headers[':protocol'];
 
-                // 1. WebTransport Kontrolü (Router'a asla gitmez)
+                // 1. WebTransport CONNECT — never goes through the router
                 if (method === 'CONNECT' && protocol === 'webtransport') {
                     try {
                         this.emit('webtransport', req, h3, conn);
@@ -75,7 +75,7 @@ class Http2FallbackGateway extends EventEmitter {
                     return;
                 }
 
-                // 2. Normal İstekler (GET, POST vb.)
+                // 2. Regular HTTP/3 requests (GET, POST, ...)
                 const chunks = [];
                 req.on('data', (c) => chunks.push(c));
                 
@@ -84,7 +84,7 @@ class Http2FallbackGateway extends EventEmitter {
                     this._dispatch(req);
                 });
 
-                // GET gibi body'si olmayan anlık istekler için güvenlik
+                // Safety net for body-less requests already complete at attach time
                 if (req.stream && req._complete) {
                     req.body = Buffer.concat(chunks);
                     this._dispatch(req);
@@ -120,6 +120,43 @@ class Http2FallbackGateway extends EventEmitter {
     }
 
     _dispatch(req) {
+        const t0 = process.hrtime.bigint();
+        const transport = req.transport || 'h?';
+        const method = (req.method || 'GET').toUpperCase();
+        const path = req.path || '/';
+        const is0RTT = req.quicConn && req.stream && typeof req.quicConn.is0RTT === 'function'
+            ? req.quicConn.is0RTT(req.stream.id)
+            : false;
+        const rttLabel = transport === 'h3' ? (is0RTT ? '0-RTT' : '1-RTT') : transport.toUpperCase();
+        const remote = req.quicConn
+            ? `${req.quicConn.remoteAddress}:${req.quicConn.remotePort}`
+            : (req.stream && req.stream.session && req.stream.session.socket
+                ? `${req.stream.session.socket.remoteAddress}:${req.stream.session.socket.remotePort}`
+                : '-');
+
+        // Best-effort access log: hook respond() once to capture the
+        // status code without changing the response shape.
+        const origRespond = req.respond && req.respond.bind(req);
+        let loggedStatus = null;
+        if (typeof origRespond === 'function') {
+            req.respond = (status, headers) => {
+                if (loggedStatus === null) loggedStatus = status;
+                return origRespond(status, headers);
+            };
+        }
+        const finish = () => {
+            const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+            const status = loggedStatus !== null ? loggedStatus : '-';
+            log.info(`${rttLabel} ${method} ${path} ${status} ${ms.toFixed(1)}ms ${remote}`);
+        };
+        if (req.stream && typeof req.stream.once === 'function') {
+            req.stream.once('finish', finish);
+            req.stream.once('close', finish);
+        } else if (typeof req.once === 'function') {
+            req.once('end', finish);
+            req.once('close', finish);
+        }
+
         if (!this.router) {
             try { req.respond(404).end('Router Not Configured'); } catch(_) {}
             return;
@@ -127,7 +164,7 @@ class Http2FallbackGateway extends EventEmitter {
         try {
             this.router.handle(req, req.quicConn);
         } catch (err) {
-            log.error("Router execution error:", err.message);
+            log.error('Router execution error:', err.message);
             try { req.respond(500).end('Internal Server Error'); } catch(_) {}
         }
     }

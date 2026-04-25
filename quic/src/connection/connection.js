@@ -10,6 +10,7 @@ const {
   deriveInitialSecrets, generateConnectionId,
   generateStatelessResetToken, computeNonce,
   aeadEncrypt, aeadDecrypt,
+  validateRetryIntegrityTag,
 } = require('../crypto/quic-crypto');
 const { TLSEngine } = require('../crypto/tls-engine');
 const {
@@ -85,7 +86,9 @@ class QuicConnection extends EventEmitter {
       [ENCRYPTION_LEVEL.ONE_RTT]: -1,
     };
 
-    // Packets to ACK per level
+    // Packets to ACK per level. 0-RTT and 1-RTT share the application
+    // data packet number space (RFC 9001 §5.4.1) so 0-RTT acks ride on
+    // 1-RTT packets; we never need a separate ZERO_RTT ack queue.
     this.packetsToAck = {
       [ENCRYPTION_LEVEL.INITIAL]: [],
       [ENCRYPTION_LEVEL.HANDSHAKE]: [],
@@ -96,6 +99,7 @@ class QuicConnection extends EventEmitter {
     this.pendingFrames = {
       [ENCRYPTION_LEVEL.INITIAL]: [],
       [ENCRYPTION_LEVEL.HANDSHAKE]: [],
+      [ENCRYPTION_LEVEL.ZERO_RTT]: [],
       [ENCRYPTION_LEVEL.ONE_RTT]: [],
     };
 
@@ -118,7 +122,7 @@ class QuicConnection extends EventEmitter {
       transportParams: tpBuffer,
       // 0-RTT Support
       enable0rtt: options.enable0rtt !== undefined ? options.enable0rtt : true,
-      ticketKey: options.ticketKey || null,  // ✅ EKLENDİ
+      ticketKey: options.ticketKey || null,
       // Cipher Suites
       cipherSuites: options.cipherSuites || undefined,
       // mTLS options
@@ -178,7 +182,7 @@ class QuicConnection extends EventEmitter {
   _setupTLSCallbacks() {
     this.tls.on('handshakeKeys', (info) => {
       debug(this._label, 'Got handshake keys');
-      // DİNAMİK CİPHER SUITE EKLENTİSİ: Şifreleme tipini (chacha20 vb.) keylere yapıştırıyoruz.
+      // Tag the keys with the AEAD suite (e.g. chacha20-poly1305) so the codec picks the right cipher.
       const suite = info.cipher ? info.cipher.aead : 'aes-128-gcm';
       this.keys[ENCRYPTION_LEVEL.HANDSHAKE] = {
         send: { ...(this.isServer ? info.serverKeys : info.clientKeys), suite },
@@ -187,8 +191,8 @@ class QuicConnection extends EventEmitter {
     });
 
     this.tls.on('earlyKeys', ({ keys, suite, ticketNonce }) => {
-      // suite artık tls-engine'den geliyor: 'chacha20-poly1305', 'aes-256-gcm' veya 'aes-128-gcm'
-      debug(this._label, `0-RTT Anahtarları yüklendi. Suite: ${suite}`);
+      // suite is forwarded from tls-engine (chacha20-poly1305 / aes-256-gcm / aes-128-gcm)
+      debug(this._label, `0-RTT keys installed (suite=${suite})`);
       this.keys[ENCRYPTION_LEVEL.ZERO_RTT] = {
         recv: { ...keys, suite },
       };
@@ -197,7 +201,7 @@ class QuicConnection extends EventEmitter {
 
     this.tls.on('applicationKeys', (info) => {
       debug(this._label, 'Got application (1-RTT) keys');
-      // DİNAMİK CİPHER SUITE EKLENTİSİ:
+      // Tag the keys with the negotiated AEAD suite
       const suite = info.cipher ? info.cipher.aead : 'aes-128-gcm';
       this.keys[ENCRYPTION_LEVEL.ONE_RTT] = {
         send: { ...(this.isServer ? info.serverKeys : info.clientKeys), suite },
@@ -243,7 +247,7 @@ class QuicConnection extends EventEmitter {
       this._flushAll();
     });
 
-    // 0-RTT: YENİ EKLENEN HAYATİ TLS DİNLEYİCİLERİ
+    // 0-RTT: TLS event listeners for early data
     this.tls.on('postHandshakeCrypto', ({ level, data }) => {
       debug(this._label, `Enqueuing post-handshake crypto at level ${level}`);
       if (this.state !== CONN_STATE.CONNECTED) return;
@@ -328,7 +332,7 @@ class QuicConnection extends EventEmitter {
     this.originalDcid = Buffer.from(this.dcid);
 
     const initialSecrets = deriveInitialSecrets(this.dcid, this.version);
-    // INITIAL Paketleri RFC gereği her zaman aes-128-gcm olmak zorundadır.
+    // INITIAL packets MUST use aes-128-gcm per RFC 9001 §5.2.
     this.keys[ENCRYPTION_LEVEL.INITIAL] = {
       send: { ...initialSecrets.clientKeys, suite: 'aes-128-gcm' },
       recv: { ...initialSecrets.serverKeys, suite: 'aes-128-gcm' },
@@ -350,7 +354,7 @@ class QuicConnection extends EventEmitter {
     this.tls.transportParams = encodeTransportParams(this.localParams, true);
 
     const initialSecrets = deriveInitialSecrets(dcid, this.version);
-    // INITIAL Paketleri RFC gereği her zaman aes-128-gcm olmak zorundadır.
+    // INITIAL packets MUST use aes-128-gcm per RFC 9001 §5.2.
     this.keys[ENCRYPTION_LEVEL.INITIAL] = {
       send: { ...initialSecrets.serverKeys, suite: 'aes-128-gcm' },
       recv: { ...initialSecrets.clientKeys, suite: 'aes-128-gcm' },
@@ -403,8 +407,8 @@ class QuicConnection extends EventEmitter {
     switch (header.packetType) {
       case PACKET_TYPE.INITIAL:   level = ENCRYPTION_LEVEL.INITIAL; break;
       case PACKET_TYPE.HANDSHAKE: level = ENCRYPTION_LEVEL.HANDSHAKE; break;
-      case PACKET_TYPE.ZERO_RTT:  level = ENCRYPTION_LEVEL.ZERO_RTT; break; // BUNU EKLE
-      case PACKET_TYPE.RETRY:     return buf.length;
+      case PACKET_TYPE.ZERO_RTT:  level = ENCRYPTION_LEVEL.ZERO_RTT; break;
+      case PACKET_TYPE.RETRY:     return this._handleRetry(buf, header);
       default: return header.totalLength;
     }
 
@@ -414,7 +418,7 @@ class QuicConnection extends EventEmitter {
     }
 
     const packetBuf = buf.subarray(0, header.totalLength);
-    const keys = this.keys[level].recv; // Artık içinde keys.suite barındırıyor
+    const keys = this.keys[level].recv; // includes keys.suite
 
     let result;
     try {
@@ -444,7 +448,14 @@ class QuicConnection extends EventEmitter {
     }
 
     if (_hasAckElicitingFrame(frames)) {
-      this.packetsToAck[level].push(packetNumber);
+      // 0-RTT and 1-RTT share the application packet number space
+      // (RFC 9001 §5.4.1), and we cannot send a 0-RTT-protected ACK
+      // (we only have 0-RTT recv keys). Fold 0-RTT ACKs into the
+      // 1-RTT queue so they ride on a 1-RTT packet.
+      const ackLevel = (level === ENCRYPTION_LEVEL.ZERO_RTT)
+        ? ENCRYPTION_LEVEL.ONE_RTT
+        : level;
+      this.packetsToAck[ackLevel].push(packetNumber);
     }
 
     this._processFrames(frames, level);
@@ -458,6 +469,64 @@ class QuicConnection extends EventEmitter {
     return header.totalLength;
   }
 
+  // RFC 9000 §17.2.5 / RFC 9001 §5.8: A client MUST accept at most one
+  // Retry per connection attempt. We:
+  //   1. Validate the integrity tag (using the *original* DCID we sent).
+  //   2. Save the new server-chosen connection id and retry token.
+  //   3. Re-derive Initial keys with the new DCID.
+  //   4. Reset the Initial packet number space and re-emit the
+  //      ClientHello with the retry token in the next Initial.
+  _handleRetry(buf, header) {
+    if (this.isServer) return header.totalLength;
+    if (this._retryHandled) {
+      debug(this._label, 'Ignoring extra Retry (already processed one)');
+      return header.totalLength;
+    }
+    if (this.state !== CONN_STATE.HANDSHAKE) {
+      debug(this._label, 'Ignoring Retry outside handshake state');
+      return header.totalLength;
+    }
+
+    const odcid = this.originalDcid || this.dcid;
+    if (!validateRetryIntegrityTag(this.version, odcid, buf.subarray(0, header.totalLength))) {
+      debug(this._label, 'Retry integrity tag invalid, dropping');
+      return header.totalLength;
+    }
+
+    debug(this._label, `Retry accepted, new DCID=${header.scid.toString('hex')} token=${header.retryToken.length}B`);
+    this._retryHandled = true;
+
+    // The server's SCID becomes our new DCID for the rest of the handshake.
+    this.dcid = Buffer.from(header.scid);
+    this._retryToken = Buffer.from(header.retryToken);
+
+    // Re-derive Initial secrets keyed by the new DCID.
+    const initialSecrets = deriveInitialSecrets(this.dcid, this.version);
+    this.keys[ENCRYPTION_LEVEL.INITIAL] = {
+      send: { ...initialSecrets.clientKeys, suite: 'aes-128-gcm' },
+      recv: { ...initialSecrets.serverKeys, suite: 'aes-128-gcm' },
+    };
+
+    // Drop any in-flight INITIAL state and re-issue the ClientHello.
+    // The TLS transcript stays as-is — generateClientHello() is now
+    // idempotent and returns the cached bytes from the first flight,
+    // which is what RFC 9001 §5.6 requires.
+    this.pendingFrames[ENCRYPTION_LEVEL.INITIAL] = [];
+    this.packetsToAck[ENCRYPTION_LEVEL.INITIAL] = [];
+    this.largestRecvPn[ENCRYPTION_LEVEL.INITIAL] = -1;
+    if (this.recovery && typeof this.recovery.resetPnSpace === 'function') {
+      this.recovery.resetPnSpace(0);
+    } else {
+      // Fallback: reset whatever PN counter the recovery exposes.
+      if (this.nextPn) this.nextPn[ENCRYPTION_LEVEL.INITIAL] = 0;
+    }
+
+    const { level, data } = this.tls.generateClientHello();
+    this._queueCryptoFrame(level, data);
+    this._flushAll();
+    return header.totalLength;
+  }
+
   _processShortHeaderPacket(buf, header) {
     const level = ENCRYPTION_LEVEL.ONE_RTT;
     if (!this.keys[level]) {
@@ -465,7 +534,7 @@ class QuicConnection extends EventEmitter {
       return buf.length;
     }
 
-    const keys = this.keys[level].recv; // Artık içinde keys.suite barındırıyor
+    const keys = this.keys[level].recv; // includes keys.suite
     const dcidLen = this.scid.length;
     const pnOffset = 1 + dcidLen;
 
@@ -618,7 +687,7 @@ class QuicConnection extends EventEmitter {
     }
   }
 
-// _processFrames içinde çağırırken this._handleStreamFrame(frame, level) olarak güncelle
+// _processFrames passes the encryption level so STREAM frames can be tagged.
   _handleStreamFrame(frame, level) {
     let stream = this.streams.get(frame.streamId);
     if (!stream) {
@@ -633,7 +702,7 @@ class QuicConnection extends EventEmitter {
       this.emit('stream', stream);
     }
 
-    // KRİTİK: Eğer bu veri 0-RTT paketinden çıktıysa stream'i damgala!
+    // Mark the stream as 0-RTT-originated so the router can apply replay policy.
     if (level === ENCRYPTION_LEVEL.ZERO_RTT) {
       this.zeroRttStreams.add(frame.streamId);
     }
@@ -661,12 +730,12 @@ class QuicConnection extends EventEmitter {
 
   createStream(bidirectional = true) {
     let streamId;
-    let initialSendWindow = 65535; // Flow Control: Varsayılan güvenli pencere (64KB)
+    let initialSendWindow = 65535; // Default 64 KB flow-control window
 
     if (bidirectional) {
       streamId = this.nextBidiStreamId;
       this.nextBidiStreamId += 4;
-      // Tarayıcının bidi stream'ler için bize tanıdığı limit
+      // Bidirectional flow-control window the peer granted us
       if (this.peerParams) {
         initialSendWindow = this.isServer 
           ? (this.peerParams.initialMaxStreamDataBidiRemote || 65535)
@@ -675,13 +744,13 @@ class QuicConnection extends EventEmitter {
     } else {
       streamId = this.nextUniStreamId;
       this.nextUniStreamId += 4;
-      // Tarayıcının tek yönlü (Control/QPACK) stream'ler için bize tanıdığı limit
+      // Unidirectional (Control / QPACK) flow-control window
       if (this.peerParams) {
         initialSendWindow = this.peerParams.initialMaxStreamDataUni || 65535;
       }
     }
 
-    // Stream'i oluştururken pencere (window) limitini içeri aktarıyoruz ki veri akabilsin!
+    // Pass the granted window in so the stream can actually emit data
     const stream = new QuicStream(streamId, this, {
       initialMaxStreamData: initialSendWindow
     });
@@ -897,7 +966,7 @@ _flushStreams() {
   _sendPacket(level, payload, frames) {
     if (!this.keys[level]) return;
 
-    const keys = this.keys[level].send; // Artık içinde keys.suite barındırıyor
+    const keys = this.keys[level].send; // includes keys.suite
     const pnSpace = levelToPnSpace(level);
     const pn = this.recovery.nextPn(pnSpace);
 
@@ -920,7 +989,11 @@ _flushStreams() {
           version: this.version,
           dcid: this.dcid,
           scid: this.scid,
-          token: level === ENCRYPTION_LEVEL.INITIAL ? Buffer.alloc(0) : undefined,
+          // INITIAL after a Retry MUST echo the server-issued token
+          // (RFC 9000 §17.2.2). Otherwise it's an empty token.
+          token: level === ENCRYPTION_LEVEL.INITIAL
+            ? (this._retryToken || Buffer.alloc(0))
+            : undefined,
           packetNumber: pn,
           payload,
           keys,
@@ -1131,6 +1204,7 @@ function levelName(level) {
   switch (level) {
     case ENCRYPTION_LEVEL.INITIAL: return 'INITIAL';
     case ENCRYPTION_LEVEL.HANDSHAKE: return 'HANDSHAKE';
+    case ENCRYPTION_LEVEL.ZERO_RTT: return '0-RTT';
     case ENCRYPTION_LEVEL.ONE_RTT: return '1-RTT';
     default: return `L${level}`;
   }

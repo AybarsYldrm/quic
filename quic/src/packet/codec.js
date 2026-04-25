@@ -42,6 +42,26 @@ function parseLongHeader(buf) {
   if (offset + scidLen > buf.length) throw new Error('SCID overflows');
   const scid = buf.subarray(offset, offset + scidLen); offset += scidLen;
 
+  // RFC 9000 §17.2.5: Retry has no token-length, no packet-number length,
+  // no payload length. After SCID the rest of the packet is
+  // <retry-token> || <16-byte retry-integrity-tag>.
+  if (packetType === PACKET_TYPE.RETRY) {
+    if (buf.length - offset < 16) throw new Error('Retry too short for integrity tag');
+    const retryToken = buf.subarray(offset, buf.length - 16);
+    const integrityTag = buf.subarray(buf.length - 16);
+    return {
+      isLong: true,
+      packetType,
+      version,
+      dcid: Buffer.from(dcid),
+      scid: Buffer.from(scid),
+      retryToken: Buffer.from(retryToken),
+      integrityTag: Buffer.from(integrityTag),
+      headerLength: offset,
+      totalLength: buf.length,
+    };
+  }
+
   let token = null;
   if (packetType === PACKET_TYPE.INITIAL) {
     const { value: tokenLen, length: tlLen } = decodeVarInt(buf, offset);
@@ -107,19 +127,18 @@ function parseVersionNegotiation(buf, offset) {
 // ----- Packet Decryption -----
 
 function decryptPacket(packet, header, keys, largestPn) {
-  // 1. largestPn kontrolü (BigInt hatasını önlemek için güvenli başlangıç)
+  // 1. Treat undefined / -1 largestPn as 0 to avoid BigInt(undefined) crashes.
   const safeLargestPn = (largestPn === undefined || largestPn === null || largestPn === -1) ? 0 : largestPn;
-  
-  // 2. Keys içinden şifreleme bilgilerini al
+
+  // 2. Pull AEAD material out of the keys bundle.
   const { key, iv, hp, suite = 'aes-128-gcm' } = keys;
 
-  // 3. Header Protection (Maskeleme) kaldırılıyor
-  // ÖNEMLİ: 'buf' yerine 'packet' kullanıldı, 'headerInfo' yerine 'header' kullanıldı.
+  // 3. Strip header protection (unmask the first byte and the packet number).
   const { packet: unprotected, pnLength } = removeHeaderProtection(
     hp, packet, header.pnOffset, header.isLong, suite
   );
 
-  // 4. Paket numarasını (Packet Number) oku
+  // 4. Read the truncated packet number.
   let truncatedPn = 0;
   for (let i = 0; i < pnLength; i++) {
     truncatedPn = (truncatedPn << 8) | unprotected[header.pnOffset + i];
@@ -127,7 +146,7 @@ function decryptPacket(packet, header, keys, largestPn) {
 
   const packetNumber = decodePacketNumber(truncatedPn, pnLength, safeLargestPn);
 
-  // 5. AEAD Şifre Çözme (Decryption)
+  // 5. AEAD decryption.
   const aadEnd = header.pnOffset + pnLength;
   const aad = unprotected.subarray(0, aadEnd);
 
@@ -135,13 +154,13 @@ function decryptPacket(packet, header, keys, largestPn) {
   if (header.isLong) {
     payloadEnd = header.pnOffset + header.payloadLength;
   } else {
-    payloadEnd = packet.length; // 'buf' yerine 'packet'
+    payloadEnd = packet.length;
   }
   
   const ciphertext = unprotected.subarray(aadEnd, payloadEnd);
   const nonce = computeNonce(iv, packetNumber);
   
-  // Dinamik algoritma ile şifreyi çöz
+  // Dynamic AEAD decryption (suite chosen by the negotiated cipher)
   const plaintext = aeadDecrypt(suite, key, nonce, aad, ciphertext);
 
   return {
@@ -187,7 +206,7 @@ function buildLongHeaderPacket(options) {
   } = options;
   let { payload } = options;
 
-  // YENİ: Şifreleme algoritmasını seç
+  // Pick the AEAD per cipher-suite (aes-128-gcm, aes-256-gcm, chacha20-poly1305)
   const suite = keys.suite || 'aes-128-gcm';
 
   // Ensure minimum payload for HP
@@ -240,12 +259,12 @@ function buildLongHeaderPacket(options) {
 
   const nonce = computeNonce(keys.iv, packetNumber);
   
-  // YENİ: Dinamik şifreleme
+  // Dynamic AEAD encryption
   const ciphertext = aeadEncrypt(suite, keys.key, nonce, header, payload);
 
   const fullPacket = Buffer.concat([header, ciphertext]);
 
-  // YENİ: Dinamik Header Protection
+  // Dynamic header protection
   return applyHeaderProtection(keys.hp, fullPacket, pnOffset, pnLength, true, suite);
 }
 
@@ -255,7 +274,7 @@ function buildShortHeaderPacket(options) {
   } = options;
   let { payload } = options;
 
-  // YENİ: Şifreleme algoritmasını seç
+  // Pick the AEAD per cipher-suite (aes-128-gcm, aes-256-gcm, chacha20-poly1305)
   const suite = keys.suite || 'aes-128-gcm';
 
   payload = ensureMinPayload(payload);
@@ -278,12 +297,12 @@ function buildShortHeaderPacket(options) {
 
   const nonce = computeNonce(keys.iv, packetNumber);
   
-  // YENİ: Dinamik şifreleme
+  // Dynamic AEAD encryption
   const ciphertext = aeadEncrypt(suite, keys.key, nonce, header, payload);
 
   const fullPacket = Buffer.concat([header, ciphertext]);
 
-  // YENİ: Dinamik Header Protection
+  // Dynamic header protection
   return applyHeaderProtection(keys.hp, fullPacket, pnOffset, pnLength, false, suite);
 }
 

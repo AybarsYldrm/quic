@@ -17,7 +17,7 @@ class H2StreamAdapter extends EventEmitter {
     this.altSvc = options.altSvc || null;
     this._responseHeaders = {};
     
-    // KRİTİK: Eğer stream biz adaptörü kurana kadar çoktan bittiyse bunu yakala
+    // If the stream finished before the adapter attached, capture that.
     this._complete = stream.readableEnded || false;
 
     const chunks = [];
@@ -29,7 +29,7 @@ class H2StreamAdapter extends EventEmitter {
       this.emit('end');
     });
 
-    // Eğer çoktan bittiyse, 'end' eventini zorla tetikle ki Router askıda kalmasın
+    // Force-emit 'end' if already done so the router does not stall
     if (this._complete) {
       process.nextTick(() => this.emit('end'));
     }
@@ -51,7 +51,7 @@ class H2StreamAdapter extends EventEmitter {
     }
 
     try {
-      // Eğer stream client tarafından koparıldıysa yazmaya çalışma, çökmeyi engeller
+      // Skip writes when the client has already torn the stream down.
       if (!this.stream.headersSent && !this.stream.destroyed && !this.stream.closed) {
         this.stream.respond(finalHeaders);
       }
@@ -80,7 +80,7 @@ class H2StreamAdapter extends EventEmitter {
           }
           if (!stream.destroyed) stream.end(buf);
         } catch (e) {
-           // Client bağlantıyı kapattıysa görmezden gel
+           // ignore — client closed the connection
         }
       }
     };
@@ -99,7 +99,7 @@ class Http1RequestAdapter extends EventEmitter {
     this.body = Buffer.alloc(0);
     this.altSvc = options.altSvc || null;
     
-    // HTTP/1.1 için state kontrolü
+    // HTTP/1.1 state check
     this._complete = req.readableEnded || req.complete || false;
 
     const chunks = [];

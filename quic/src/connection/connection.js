@@ -18,7 +18,7 @@ const {
 } = require('../packet/codec');
 const { decodeFrames, encodeFrame } = require('../frame/codec');
 const { encodeTransportParams, decodeTransportParams } = require('../transport/params');
-const { QuicStream, isClientInitiated, isBidirectional } = require('../stream/stream');
+const { QuicStream, STREAM_STATE, isClientInitiated, isBidirectional } = require('../stream/stream');
 const { RecoveryState, PN_SPACE } = require('../recovery/recovery');
 
 const { createLogger } = require('../utils/logger');
@@ -249,6 +249,15 @@ class QuicConnection extends EventEmitter {
       if (this.state !== CONN_STATE.CONNECTED) return;
       this._queueCryptoFrame(level, data);
       this._flushAll();
+    });
+
+    this.tls.on('tlsError', (err) => {
+      debug(this._label, `TLS error: ${err.message}`);
+      if (this.state === CONN_STATE.CLOSED) return;
+      this.state = CONN_STATE.CLOSED;
+      this._cleanup();
+      this.emit('error', err);
+      this.emit('closed');
     });
 
     this.tls.on('sessionTicket', (ticket) => {
@@ -778,10 +787,15 @@ _flushStreams() {
     if (this.state !== CONN_STATE.CONNECTED) return;
 
     const activeStreams = [];
-    // BURAYI GÜNCELLE: Ölü streamleri Map'ten tamamen sil!
+    // Drop streams from the map only when BOTH directions are done.
+    // A stream that sent FIN can still receive data from the peer
+    // (half-closed local). Deleting it here breaks the response
+    // path on a client that already finished its request body.
     for (const [id, stream] of this.streams) {
-      if (stream.destroyed || stream._finSent) {
-        this.streams.delete(id); // <--- PİNG ARTIŞINI BİTİRECEK SİHİRLİ SATIR
+      const fullyClosed = stream.destroyed
+        || (stream._finSent && stream.recvState === STREAM_STATE.READ);
+      if (fullyClosed) {
+        this.streams.delete(id);
         continue;
       }
       if (stream.sendBuffer.length > 0 || stream.sendFin) {
@@ -1039,8 +1053,12 @@ _flushStreams() {
     if (timeout > 0) {
       this.idleTimer = setTimeout(() => {
         debug(this._label, 'Idle timeout');
+        const wasHandshaking = this.state !== CONN_STATE.CONNECTED;
         this.state = CONN_STATE.CLOSED;
         this._cleanup();
+        if (wasHandshaking) {
+          this.emit('error', new Error('QUIC handshake timed out (idle)'));
+        }
         this.emit('closed');
       }, timeout);
     }

@@ -14,12 +14,11 @@ const PORT = parseInt(process.env.QUIC_PORT || '443', 10);
 const DOMAIN = process.env.DOMAIN || HOST;
 const crypto = require('crypto');
 
-// Sunucu başlarken BİR KEZ oluştur — modül düzeyinde tanımla
+// Persistent across restarts iff QUIC_TICKET_KEY is set; otherwise issued
+// tickets become invalid on restart (clients fall back to full handshake).
 const TICKET_KEY = process.env.QUIC_TICKET_KEY
-  ? Buffer.from(process.env.QUIC_TICKET_KEY, 'hex')  // Kalıcı key için env'den al
-  : crypto.randomBytes(16);                            // Geçici (yeniden başlatmada biletler geçersiz)
-
-console.log('[Server] Ticket key:', TICKET_KEY.toString('hex')); // Doğrulama için
+  ? Buffer.from(process.env.QUIC_TICKET_KEY, 'hex')
+  : crypto.randomBytes(16);
 
 
 const auth = new AuthService(process.env.JWT_SECRET);

@@ -89,12 +89,8 @@ function deriveResumptionSecret(hashAlgo, masterSecret, transcriptHash) {
   );
 }
 
-/**
- * ✅ DÜZELTİLDİ: log artık tanımlı. meta (suite bilgisi) döndürülüyor.
- */
 function derivePSK(hashAlgo, ticketKey, encryptedTicket) {
-    console.log('[TICKET-DEBUG] Decrypt key:', ticketKey.toString('hex'));
-
+  log.trace('[0-RTT] Verifying ticket with key', ticketKey.toString('hex').slice(0, 8) + '…');
   try {
     if (encryptedTicket.length < 28) {
       log.warn('[0-RTT] Bilet çok kısa, geçersiz.');

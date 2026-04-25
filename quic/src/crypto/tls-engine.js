@@ -706,7 +706,7 @@ class TLSEngine extends EventEmitter {
   // ==========================================
 
   _sendNewSessionTicket() {
-      console.log('[TICKET-DEBUG] Encrypt key:', this._ticketKey.toString('hex'));
+    log.trace('[0-RTT] Issuing ticket with key', this._ticketKey.toString('hex').slice(0, 8) + '…');
 
     const transcriptHash = this._getTranscriptHash();
     

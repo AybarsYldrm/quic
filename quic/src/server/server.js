@@ -72,6 +72,15 @@ class QuicServer extends EventEmitter {
     // Supported versions
     this.supportedVersions = [QUIC_VERSION_1];
     this.ticketStore = new SessionTicketStore();
+    // Persistent 0-RTT ticket key — must be the SAME across all connections
+    // for resumption to work. If not provided, generate a random one at
+    // process startup; clients holding tickets across restarts will silently
+    // fall back to full handshake.
+    this.ticketKey = options.ticketKey
+      ? (Buffer.isBuffer(options.ticketKey)
+          ? options.ticketKey
+          : Buffer.from(options.ticketKey, 'hex'))
+      : crypto.randomBytes(16);
 
     // Active connections indexed by CID
     this.connections = new Map();
@@ -216,6 +225,7 @@ class QuicServer extends EventEmitter {
       cipherSuites: this.cipherSuites,
       transportParams: this.transportParams,
       ticketStore: this.ticketStore,
+      ticketKey: this.ticketKey,
       keepaliveInterval: this.keepaliveInterval,
       // mTLS options
       requestCert: this.requestCert,

@@ -28,6 +28,7 @@ class Http2FallbackGateway extends EventEmitter {
         this.enableWebTransport = !!options.enableWebTransport;
         this.cipherSuites = options.cipherSuites;
         this.transportParams = options.transportParams || {};
+        this.ticketKey = options.ticketKey || null;
     }
 
     async listen() {
@@ -43,7 +44,8 @@ class Http2FallbackGateway extends EventEmitter {
             key:  this.key,
             alpn: this.h3Alpn,
             cipherSuites: this.cipherSuites,
-            transportParams: this.transportParams
+            transportParams: this.transportParams,
+            ticketKey: this.ticketKey,
         });
 
         this.quicServer.on('connection', (conn) => {

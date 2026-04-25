@@ -1,5 +1,8 @@
 'use strict';
 
+const { createLogger } = require('../utils/logger');
+const log = createLogger('QPACK');
+
 /**
  * QPACK - HTTP/3 Header Compression - RFC 9204
  *
@@ -535,9 +538,7 @@ class QpackDecoder {
         }
       }
     } catch (err) {
-      if (process.env.QUIC_DEBUG) {
-        console.error(`[QPACK] decode hatası (offset=${offset}):`, err.message);
-      }
+      log.warn(`decode error (offset=${offset}):`, err.message);
     }
 
     return headers;
@@ -591,9 +592,7 @@ class QpackDecoder {
 
         if (offset === prevOffset) offset++;
       } catch (err) {
-        if (process.env.QUIC_DEBUG) {
-          console.error('[QPACK] Encoder talimat hatası:', err.message);
-        }
+        log.warn('encoder instruction error:', err.message);
         break;
       }
     }

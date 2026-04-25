@@ -1,6 +1,9 @@
 'use strict';
 
 const { EventEmitter } = require('events');
+const { createLogger } = require('../utils/logger');
+
+const log = createLogger('H2');
 
 class H2StreamAdapter extends EventEmitter {
   constructor(stream, headers, options = {}) {
@@ -53,7 +56,7 @@ class H2StreamAdapter extends EventEmitter {
         this.stream.respond(finalHeaders);
       }
     } catch (e) {
-      console.error(`[H2] Headers error: ${e.message}`);
+      log.warn('Headers send failed:', e.message);
     }
 
     const stream = this.stream;

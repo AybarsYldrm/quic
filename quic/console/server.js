@@ -28,51 +28,46 @@ async function main() {
   });
 
   server.on('connection', (conn) => {
-    console.log(`[CONN] Yeni bağlantı: ${conn.remoteAddress}:${conn.remotePort}`);
+    console.log(`[CONN] new: ${conn.remoteAddress}:${conn.remotePort}`);
 
     conn.on('stream', (stream) => {
-      console.log(stream)
-      console.log(`[STREAM] #${stream.id} açıldı`);
+      console.log(`[STREAM] #${stream.id} opened`);
 
       const chunks = [];
 
-      stream.on('data', (data) => {
-        chunks.push(data);
-      });
+      stream.on('data', (data) => chunks.push(data));
 
       stream.on('end', () => {
-        const received = Buffer.concat(chunks);
-        const text = received.toString();
+        const text = Buffer.concat(chunks).toString();
         console.log(`[STREAM] #${stream.id} -> "${text}"`);
 
-        // Echo back
         const response = `ECHO: ${text}`;
         stream.end(response);
         console.log(`[STREAM] #${stream.id} <- "${response}"`);
       });
 
       stream.on('error', (err) => {
-        console.error(`[STREAM] #${stream.id} hata:`, err.message);
+        console.error(`[STREAM] #${stream.id} error:`, err.message);
       });
     });
 
     conn.on('closed', () => {
-      console.log(`[CONN] Bağlantı kapandı: ${conn.remoteAddress}:${conn.remotePort}`);
+      console.log(`[CONN] closed: ${conn.remoteAddress}:${conn.remotePort}`);
     });
   });
 
   server.on('error', (err) => {
-    console.error('[SERVER] Hata:', err.message);
+    console.error('[SERVER] error:', err.message);
   });
 
   const addr = await server.listen(PORT, HOST);
-  console.log(`[SERVER] Dinleniyor: ${addr.address}:${addr.port}`);
-  console.log(`[SERVER] Cert: ${CERT_PATH}`);
-  console.log(`[SERVER] Key:  ${KEY_PATH}`);
-  console.log('--- Bağlantı bekleniyor ---\n');
+  console.log(`[SERVER] listening on ${addr.address}:${addr.port}`);
+  console.log(`[SERVER] cert: ${CERT_PATH}`);
+  console.log(`[SERVER] key:  ${KEY_PATH}`);
+  console.log('--- waiting for connections ---\n');
 }
 
 main().catch((err) => {
-  console.error('Server başlatılamadı:', err);
+  console.error('Server failed to start:', err);
   process.exit(1);
 });

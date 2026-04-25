@@ -5,7 +5,7 @@ const { QuicClient } = require('../src/index');
 const HOST        = process.argv[2] || process.env.QUIC_HOST || 'nat.intranet.fitfak.net';
 const PORT        = parseInt(process.argv[3] || process.env.QUIC_PORT || '7844', 10);
 const SERVER_NAME = process.argv[4] || process.env.QUIC_SNI  || 'nat.intranet.fitfak.net';
-const MESSAGE     = process.argv[5] || 'Hello QUIC! Bu mesaj RFC 9000 uyumlu QUIC üzerinden gönderildi.';
+const MESSAGE     = process.argv[5] || 'Hello QUIC! This message was sent over an RFC 9000 compliant QUIC channel.';
 
 async function main() {
   console.log('=== QUIC Client - RFC 9000/9001/9002 ===\n');
@@ -27,47 +27,45 @@ async function main() {
   });
 
   client.on('error', (err) => {
-    // QuicClient.connect() rejects with this same error; just log
-    // late errors (peer-initiated CONNECTION_CLOSE, network drop).
-    console.error('[CLIENT] Hata:', err.message);
+    // QuicClient.connect() rejects with this same error; this listener
+    // catches late errors (peer-initiated CONNECTION_CLOSE, network drop).
+    console.error('[CLIENT] error:', err.message);
   });
 
   try {
-    console.log('[CLIENT] Bağlanılıyor...');
+    console.log('[CLIENT] connecting...');
     const conn = await client.connect();
-    console.log('[CLIENT] Bağlantı kuruldu!\n');
+    console.log('[CLIENT] connected\n');
 
     const stream = client.createStream(true);
-    console.log(`[CLIENT] Stream #${stream.id} oluşturuldu`);
+    console.log(`[CLIENT] opened stream #${stream.id}`);
 
     stream.end(MESSAGE);
-    console.log(`[CLIENT] Gönderildi: "${MESSAGE}"`);
+    console.log(`[CLIENT] sent: "${MESSAGE}"`);
 
     const chunks = [];
-    stream.on('data', (data) => {
-      chunks.push(data);
-    });
+    stream.on('data', (data) => chunks.push(data));
 
     stream.on('end', () => {
       const response = Buffer.concat(chunks);
-      console.log(`\n[CLIENT] Yanıt: "${response.toString()}"`);
+      console.log(`\n[CLIENT] reply: "${response.toString()}"`);
 
       setTimeout(async () => {
         await client.close(0, 'done');
-        console.log('[CLIENT] Bağlantı kapatıldı');
-        console.log('[CLIENT] İstatistik:', client.stats);
+        console.log('[CLIENT] connection closed');
+        console.log('[CLIENT] stats:', client.stats);
         process.exit(0);
       }, 200);
     });
 
     setTimeout(() => {
-      console.log('\n[TIMEOUT] 15 saniye içinde yanıt alınamadı');
-      console.log('[CLIENT] İstatistik:', client.stats);
+      console.log('\n[TIMEOUT] no reply within 15 s');
+      console.log('[CLIENT] stats:', client.stats);
       process.exit(1);
     }, 15000);
 
   } catch (err) {
-    console.error('[CLIENT] Bağlantı kurulamadı:', err.message);
+    console.error('[CLIENT] connect failed:', err.message);
     process.exit(1);
   }
 }

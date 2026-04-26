@@ -101,6 +101,7 @@ class TLSEngine extends EventEmitter {
     this.maxEarlyData   = options.maxEarlyData || 0xffffffff;
     this.clientAlpns    = [];
     this.selectedAlpn   = null;
+    this.sessionTicket  = options.sessionTicket || null;
     if (options.ticketKey) {
       this._ticketKey = Buffer.isBuffer(options.ticketKey)
         ? options.ticketKey                          // already a Buffer
@@ -260,6 +261,25 @@ class TLSEngine extends EventEmitter {
 
     if (this.transportParams.length > 0) {
       extensions.push(this._buildExtension(QUIC_TP_EXTENSION, this.transportParams));
+    }
+
+    if (this.enable0rtt && this.sessionTicket && this.sessionTicket.isValid()) {
+      const ticketAgeMs = Math.max(0, Date.now() - this.sessionTicket.createdAt);
+      const obfuscatedAge = (ticketAgeMs + this.sessionTicket.ageAdd) >>> 0;
+      const ticket = this.sessionTicket.ticket;
+
+      const identity = Buffer.alloc(2 + ticket.length + 4);
+      identity.writeUInt16BE(ticket.length, 0);
+      ticket.copy(identity, 2);
+      identity.writeUInt32BE(obfuscatedAge, 2 + ticket.length);
+
+      const identitiesLen = Buffer.alloc(2);
+      identitiesLen.writeUInt16BE(identity.length, 0);
+      const identities = Buffer.concat([identitiesLen, identity]);
+      // Binder parsing is intentionally skipped in this implementation.
+      const binders = Buffer.from([0, 0]);
+      extensions.push(this._buildExtension(0x0029, Buffer.concat([identities, binders])));
+      extensions.push(this._buildExtension(0x002a, Buffer.alloc(0)));
     }
 
     const extBuf = Buffer.concat(extensions);
@@ -1003,6 +1023,7 @@ _handlePreSharedKeyExtension(data) {
   try {
     let off = 0;
     const identitiesLen = data.readUInt16BE(off); off += 2;
+    if (off + identitiesLen > data.length || identitiesLen < 2) return;
     const identitiesData = data.subarray(off, off + identitiesLen);
 
     const ticketLen = identitiesData.readUInt16BE(0);
@@ -1012,6 +1033,19 @@ _handlePreSharedKeyExtension(data) {
 
     if (result) {
       const { psk, meta } = result;
+      if (meta.sni && this.peerServerName && meta.sni !== this.peerServerName) {
+        log.warn('[TLS] 0-RTT rejected due to SNI mismatch');
+        return;
+      }
+      const negotiatedAlpn = this.selectedAlpn || this.alpn[0];
+      if (meta.alpn && negotiatedAlpn && meta.alpn !== negotiatedAlpn) {
+        log.warn('[TLS] 0-RTT rejected due to ALPN mismatch');
+        return;
+      }
+      if (!this.allowedCiphers.includes(meta.suite)) {
+        log.warn('[TLS] 0-RTT rejected due to cipher mismatch');
+        return;
+      }
       this.resumedPSK = psk;
       this.accepted0RTT = true;
       log.info('\x1b[32m[TLS] 0-RTT session ticket accepted\x1b[0m');

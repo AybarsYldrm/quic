@@ -1,11 +1,15 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const { QuicClient } = require('../src/index');
 
-const HOST        = process.argv[2] || process.env.QUIC_HOST || 'nat.intranet.fitfak.net';
+const HOST        = process.argv[2] || process.env.QUIC_HOST || '127.0.0.1';
 const PORT        = parseInt(process.argv[3] || process.env.QUIC_PORT || '7844', 10);
 const SERVER_NAME = process.argv[4] || process.env.QUIC_SNI  || 'nat.intranet.fitfak.net';
 const MESSAGE     = process.argv[5] || 'Hello QUIC! This message was sent over an RFC 9000 compliant QUIC channel.';
+const CA_PATH     = process.env.QUIC_CA || path.join(__dirname, '..', 'certs', 'cert.pem');
+const CA_PEM      = fs.existsSync(CA_PATH) ? fs.readFileSync(CA_PATH, 'utf8') : null;
 
 async function main() {
   console.log('=== QUIC Client - RFC 9000/9001/9002 ===\n');
@@ -15,7 +19,8 @@ async function main() {
     host: HOST,
     port: PORT,
     serverName: SERVER_NAME,
-    alpn: ['h3'],
+    alpn: ['echo'],
+    rejectUnauthorized: process.env.QUIC_INSECURE === '1' ? false : true,
     connectTimeout: 15000,
     transportParams: {
       maxIdleTimeout: 30000,
@@ -24,6 +29,7 @@ async function main() {
       initialMaxStreamDataBidiRemote: 262144,
       initialMaxStreamsBidi: 100,
     },
+    ca: CA_PEM,
   });
 
   client.on('error', (err) => {

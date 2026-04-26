@@ -60,7 +60,16 @@ class RecoveryState extends EventEmitter {
     this.timeThreshold = 9 / 8;
     this.packetThreshold = 3;
 
-    this.maxAckDelay = 25; // ms
+    // Peer's advertised max_ack_delay (RFC 9000 §18.2). Used in PTO so we
+    // don't probe before the peer is even allowed to send the ACK.
+    this.maxAckDelay = 25; // ms — overridden once peerParams arrive
+  }
+
+  // Connection calls this after the peer's transport_parameters arrive.
+  setPeerMaxAckDelay(ms) {
+    if (typeof ms === 'number' && Number.isFinite(ms) && ms >= 0 && ms <= 16383) {
+      this.maxAckDelay = ms;
+    }
   }
 
   _createSpace() {

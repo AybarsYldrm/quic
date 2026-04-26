@@ -25,9 +25,14 @@ class QuicStream extends EventEmitter {
     this.initiator = (streamId & 0x01) === 0 ? 'client' : 'server';
     this.bidirectional = (streamId & 0x02) === 0;
 
-    // Send state
+    // Send state. We keep an array of chunks instead of a single
+    // Buffer so write()'s common case is a cheap push instead of a
+    // Buffer.concat (which would be O(n) per write — O(n²) for many
+    // small writes). `sendBuffer.length` is exposed as a getter for
+    // backwards compatibility with connection.js's old interface.
     this.sendState = STREAM_STATE.READY;
-    this.sendBuffer = Buffer.alloc(0);
+    this._sendQueue = [];
+    this._sendQueueBytes = 0;
     this.sendOffset = 0;
     this.sentOffset = 0;
     this.sendFin = false;
@@ -59,6 +64,13 @@ class QuicStream extends EventEmitter {
     });
   }
 
+  // Backwards-compat: external callers (connection.js) read this as
+  // `stream.sendBuffer.length`. Returning a synthetic { length } object
+  // avoids touching every call site.
+  get sendBuffer() {
+    return { length: this._sendQueueBytes };
+  }
+
   write(data, fin = false) {
     if (this.destroyed) return this;
     if (this._finSent) return this;
@@ -66,27 +78,20 @@ class QuicStream extends EventEmitter {
 
     if (typeof data === 'string') data = Buffer.from(data, 'utf8');
 
-    this.sendBuffer = Buffer.concat([this.sendBuffer, data]);
+    if (data.length > 0) {
+      this._sendQueue.push(data);
+      this._sendQueueBytes += data.length;
+    }
     if (fin) {
       this.sendFin = true;
-      this.sendFinOffset = this.sendOffset + this.sendBuffer.length;
+      this.sendFinOffset = this.sendOffset + this._sendQueueBytes;
     }
 
     if (this.sendState === STREAM_STATE.READY) {
       this.sendState = STREAM_STATE.SEND;
     }
 
-    // Trigger flush on next tick to batch writes
-    if (this.connection && typeof this.connection._flushAll === 'function') {
-      if (!this._flushScheduled) {
-        this._flushScheduled = true;
-        queueMicrotask(() => {
-          this._flushScheduled = false;
-          this.connection._flushAll();
-        });
-      }
-    }
-
+    this._scheduleFlush();
     return this;
   }
 
@@ -95,22 +100,22 @@ class QuicStream extends EventEmitter {
       return this.write(data, true);
     }
     this.sendFin = true;
-    this.sendFinOffset = this.sendOffset + this.sendBuffer.length;
+    this.sendFinOffset = this.sendOffset + this._sendQueueBytes;
     if (this.sendState === STREAM_STATE.READY) {
       this.sendState = STREAM_STATE.SEND;
     }
-
-    if (this.connection && typeof this.connection._flushAll === 'function') {
-      if (!this._flushScheduled) {
-        this._flushScheduled = true;
-        queueMicrotask(() => {
-          this._flushScheduled = false;
-          this.connection._flushAll();
-        });
-      }
-    }
-
+    this._scheduleFlush();
     return this;
+  }
+
+  _scheduleFlush() {
+    if (!this.connection || typeof this.connection._flushAll !== 'function') return;
+    if (this._flushScheduled) return;
+    this._flushScheduled = true;
+    queueMicrotask(() => {
+      this._flushScheduled = false;
+      this.connection._flushAll();
+    });
   }
 
   resetStream(errorCode = 0) {
@@ -119,7 +124,6 @@ class QuicStream extends EventEmitter {
   }
 
   _getPendingData(maxBytes) {
-    // Guards: don't extract data from finished/destroyed streams
     if (this.destroyed) return null;
     if (this._finSent) return null;
     if (this.sendState === STREAM_STATE.DATA_SENT ||
@@ -128,21 +132,32 @@ class QuicStream extends EventEmitter {
       return null;
     }
 
-    if (this.sendBuffer.length === 0 && !this.sendFin) return null;
+    if (this._sendQueueBytes === 0 && !this.sendFin) return null;
 
     const available = Math.min(
-      this.sendBuffer.length,
+      this._sendQueueBytes,
       maxBytes,
       this.maxSendData - this.sentData
     );
 
     if (available <= 0 && !this.sendFin) return null;
 
-    const data = this.sendBuffer.subarray(0, available);
-    const offset = this.sendOffset;
-    const fin = this.sendFin && available === this.sendBuffer.length;
+    let data;
+    if (available === 0) {
+      // FIN-only frame
+      data = Buffer.alloc(0);
+    } else if (this._sendQueue.length === 1 && this._sendQueue[0].length === available) {
+      // Hot path: one-chunk write that fits entirely → zero copies.
+      data = this._sendQueue[0];
+      this._sendQueue.length = 0;
+    } else {
+      data = this._consumeFromQueue(available);
+    }
 
-    this.sendBuffer = this.sendBuffer.subarray(available);
+    this._sendQueueBytes -= available;
+    const offset = this.sendOffset;
+    const fin = this.sendFin && this._sendQueueBytes === 0;
+
     this.sendOffset += available;
     this.sentData += available;
 
@@ -157,11 +172,31 @@ class QuicStream extends EventEmitter {
     return { streamId: this.id, offset, data, fin };
   }
 
+  _consumeFromQueue(n) {
+    // Pull exactly `n` bytes off the head of _sendQueue, preserving
+    // any remainder of the boundary chunk in place.
+    const out = [];
+    let remaining = n;
+    while (remaining > 0) {
+      const head = this._sendQueue[0];
+      if (head.length <= remaining) {
+        out.push(head);
+        remaining -= head.length;
+        this._sendQueue.shift();
+      } else {
+        out.push(head.subarray(0, remaining));
+        this._sendQueue[0] = head.subarray(remaining);
+        remaining = 0;
+      }
+    }
+    return out.length === 1 ? out[0] : Buffer.concat(out, n);
+  }
+
   _hasPendingData() {
     if (this.destroyed || this._finSent) return false;
     if (this.sendState === STREAM_STATE.DATA_SENT ||
         this.sendState === STREAM_STATE.DATA_RECVD) return false;
-    return this.sendBuffer.length > 0 || this.sendFin;
+    return this._sendQueueBytes > 0 || this.sendFin;
   }
 
   _receiveData(offset, data, fin) {
@@ -255,8 +290,10 @@ class QuicStream extends EventEmitter {
   destroy() {
     if (this.destroyed) return;
     this.destroyed = true;
-    this.sendBuffer = Buffer.alloc(0);
+    this._sendQueue.length = 0;
+    this._sendQueueBytes = 0;
     this.recvBuffer.clear();
+    this.readableData = Buffer.alloc(0);
     this.removeAllListeners();
   }
 }

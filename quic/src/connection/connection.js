@@ -113,6 +113,10 @@ class QuicConnection extends EventEmitter {
     const tpBuffer = encodeTransportParams(this.localParams, this.isServer);
 
     // TLS engine with mTLS and 0-RTT support
+    const resumeTicket = (!this.isServer && this.ticketStore && options.serverName)
+      ? this.ticketStore.retrieve(options.serverName)
+      : null;
+
     this.tls = new TLSEngine({
       isServer: this.isServer,
       cert: options.cert,
@@ -131,6 +135,7 @@ class QuicConnection extends EventEmitter {
       ca: options.ca || null,
       clientCert: options.clientCert || null,
       clientKey: options.clientKey || null,
+      sessionTicket: resumeTicket,
     });
 
     // Streams
@@ -266,6 +271,9 @@ class QuicConnection extends EventEmitter {
 
     this.tls.on('sessionTicket', (ticket) => {
       debug(this._label, 'Received 0-RTT Session Ticket from Server');
+      if (!this.isServer && this.ticketStore && ticket && ticket.serverName) {
+        this.ticketStore.store(ticket.serverName, ticket);
+      }
       this.emit('sessionTicket', ticket);
     });
   }
@@ -604,7 +612,7 @@ class QuicConnection extends EventEmitter {
           break;
 
         case FRAME_TYPE.STREAM:
-          this._handleStreamFrame(frame);
+          this._handleStreamFrame(frame, level);
           break;
 
         case FRAME_TYPE.MAX_DATA:

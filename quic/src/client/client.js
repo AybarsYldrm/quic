@@ -23,7 +23,10 @@ class QuicClient extends EventEmitter {
     this.cert = options.cert || null;
     this.key = options.key || null;
     this.ca = options.ca || null;
-    this.rejectUnauthorized = options.rejectUnauthorized;
+    this.rejectUnauthorized = options.rejectUnauthorized !== undefined
+      ? options.rejectUnauthorized
+      : true;
+    this.ticketStore = options.ticketStore || null;
 
     // UDP socket
     this.socket = null;
@@ -75,6 +78,7 @@ class QuicClient extends EventEmitter {
           clientKey: this.key,
           ca: this.ca,
           rejectUnauthorized: this.rejectUnauthorized,
+          ticketStore: this.ticketStore,
           sendDatagram: (data) => this._sendRaw(data, this.host, this.port),
           remoteAddress: this.host,
           remotePort: this.port,

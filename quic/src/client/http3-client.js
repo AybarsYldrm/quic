@@ -38,6 +38,8 @@ class Http3Client {
     this.cert = options.cert || null;
     this.key = options.key || null;
     this.ca = options.ca || null;
+    this.rejectUnauthorized = options.rejectUnauthorized !== false;
+    this.ticketStore = options.ticketStore || null;
 
     // Connection pool: host:port -> { quicClient, h3conn }
     this._pool = new Map();
@@ -140,6 +142,8 @@ class Http3Client {
         cert: this.cert,
         key: this.key,
         ca: this.ca,
+        rejectUnauthorized: this.rejectUnauthorized,
+        ticketStore: this.ticketStore,
       });
 
       const conn = await Promise.race([
@@ -238,7 +242,7 @@ class Http3Client {
         method,
         headers,
         timeout,
-        rejectUnauthorized: false,
+        rejectUnauthorized: this.rejectUnauthorized,
       };
 
       if (this.cert) opts.cert = this.cert;

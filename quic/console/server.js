@@ -3,10 +3,10 @@
 const path = require('path');
 const { QuicServer } = require('../src/index');
 
-const CERT_PATH = process.env.QUIC_CERT || path.join(__dirname, 'certs', 'cert.pem');
-const KEY_PATH  = process.env.QUIC_KEY  || path.join(__dirname, 'certs', 'key.pem');
+const CERT_PATH = process.env.QUIC_CERT || path.join(__dirname, '..', 'certs', 'cert.pem');
+const KEY_PATH  = process.env.QUIC_KEY  || path.join(__dirname, '..', 'certs', 'key.pem');
 const PORT      = parseInt(process.env.QUIC_PORT || '7844', 10);
-const HOST      = process.env.QUIC_HOST || '185.95.164.233';
+const HOST      = process.env.QUIC_HOST || '127.0.0.1';
 
 async function main() {
   console.log('=== QUIC Server - RFC 9000/9001/9002 ===\n');

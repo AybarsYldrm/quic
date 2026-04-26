@@ -27,12 +27,17 @@ const wtServer = new WebTransportServer({ maxSessions: 100 });
 
 const INDEX_HTML = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
 const WT_HTML    = fs.readFileSync(path.join(__dirname, 'webtransport.html'), 'utf8');
-const INDEX_ETAG = `"${crypto.createHash('sha1').update(INDEX_HTML).digest('hex').slice(0, 16)}"`;
-const WT_ETAG    = `"${crypto.createHash('sha1').update(WT_HTML).digest('hex').slice(0, 16)}"`;
+const INDEX_BUF  = Buffer.from(INDEX_HTML, 'utf8');
+const WT_BUF     = Buffer.from(WT_HTML, 'utf8');
+const INDEX_ETAG = `"${crypto.createHash('sha1').update(INDEX_BUF).digest('hex').slice(0, 16)}"`;
+const WT_ETAG    = `"${crypto.createHash('sha1').update(WT_BUF).digest('hex').slice(0, 16)}"`;
 const STATIC_CACHE_CONTROL = 'public, max-age=300, must-revalidate';
 
-// Conditional-request short-circuit: 304 Not Modified when ETag matches.
-function serveStatic(req, res, body, etag) {
+// Build the response body once. The QPACK encoding and the HTTP/3
+// DATA frame wrapping happen per-request inside H3Request.respond/end —
+// pre-encoding those is a future micro-opt but it requires plumbing a
+// Buffer-only fast path through Router → H3Request.
+function serveStatic(req, res, buf, etag) {
     res.set('etag', etag);
     res.set('cache-control', STATIC_CACHE_CONTROL);
     res.set('vary', 'Accept-Encoding');
@@ -40,7 +45,9 @@ function serveStatic(req, res, body, etag) {
         res.set('content-length', '0');
         return res.status(304).end();
     }
-    res.html(body);
+    res.set('content-type', 'text/html; charset=utf-8');
+    res.set('content-length', String(buf.length));
+    res.send(buf);
 }
 
 const certData = fs.readFileSync(path.join(__dirname, 'certs', 'cert.pem'), 'utf8');
@@ -54,8 +61,8 @@ app.use((req, res, next) => {
     next();
 });
 
-app.get('/', (req, res) => serveStatic(req, res, INDEX_HTML, INDEX_ETAG));
-app.get('/webtransport', (req, res) => serveStatic(req, res, WT_HTML, WT_ETAG));
+app.get('/', (req, res) => serveStatic(req, res, INDEX_BUF, INDEX_ETAG));
+app.get('/webtransport', (req, res) => serveStatic(req, res, WT_BUF, WT_ETAG));
 
 app.post('/api/login', (req, res) => {
     const body = req.json();

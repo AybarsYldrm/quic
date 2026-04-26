@@ -134,20 +134,30 @@ class Http2FallbackGateway extends EventEmitter {
                 ? `${req.stream.session.socket.remoteAddress}:${req.stream.session.socket.remotePort}`
                 : '-');
 
-        // Best-effort access log: hook respond() once to capture the
-        // status code without changing the response shape.
+        // Two timings:
+        //   appMs  = handler started -> respond() called  (real server work)
+        //   wireMs = handler started -> stream finished   (includes peer ACK delay,
+        //            i.e. how long until the bytes were durably acknowledged)
         const origRespond = req.respond && req.respond.bind(req);
         let loggedStatus = null;
+        let appMs = null;
         if (typeof origRespond === 'function') {
             req.respond = (status, headers) => {
-                if (loggedStatus === null) loggedStatus = status;
+                if (loggedStatus === null) {
+                    loggedStatus = status;
+                    appMs = Number(process.hrtime.bigint() - t0) / 1e6;
+                }
                 return origRespond(status, headers);
             };
         }
+        let logged = false;
         const finish = () => {
-            const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+            if (logged) return;
+            logged = true;
+            const wireMs = Number(process.hrtime.bigint() - t0) / 1e6;
             const status = loggedStatus !== null ? loggedStatus : '-';
-            log.info(`${rttLabel} ${method} ${path} ${status} ${ms.toFixed(1)}ms ${remote}`);
+            const appPart = appMs !== null ? `app=${appMs.toFixed(1)}ms` : 'app=-';
+            log.info(`${rttLabel} ${method} ${path} ${status} ${appPart} wire=${wireMs.toFixed(1)}ms ${remote}`);
         };
         if (req.stream && typeof req.stream.once === 'function') {
             req.stream.once('finish', finish);

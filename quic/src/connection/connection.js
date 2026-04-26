@@ -316,8 +316,14 @@ class QuicConnection extends EventEmitter {
       this.peerMaxStreamsBidi = this.peerParams.initialMaxStreamsBidi;
     if (this.peerParams.initialMaxStreamsUni !== undefined)
       this.peerMaxStreamsUni = this.peerParams.initialMaxStreamsUni;
-    if (this.peerParams.maxAckDelay !== undefined)
+    // Pass the peer's advertised max_ack_delay through the validating
+    // setter so PTO never fires before the peer is even allowed to ACK.
+    if (this.peerParams.maxAckDelay !== undefined &&
+        typeof this.recovery.setPeerMaxAckDelay === 'function') {
+      this.recovery.setPeerMaxAckDelay(this.peerParams.maxAckDelay);
+    } else if (this.peerParams.maxAckDelay !== undefined) {
       this.recovery.maxAckDelay = this.peerParams.maxAckDelay;
+    }
   }
 
   // ===== Client: Initiate Connection =====
@@ -1061,6 +1067,24 @@ _flushStreams() {
     space.lossTime = 0;
 
     this.recovery._setLossDetectionTimer();
+
+    // Free per-level state at the same time. Once a PN space is
+    // discarded the corresponding encryption level's keys, ack queue,
+    // pending frames, and TLS crypto-stream buffers are no longer
+    // needed (RFC 9001 §4.9). Releasing them keeps long-lived
+    // connections from growing unbounded.
+    let level = null;
+    if (pnSpace === PN_SPACE.INITIAL) level = ENCRYPTION_LEVEL.INITIAL;
+    else if (pnSpace === PN_SPACE.HANDSHAKE) level = ENCRYPTION_LEVEL.HANDSHAKE;
+    if (level !== null) {
+      this.keys[level] = null;
+      if (this.packetsToAck[level]) this.packetsToAck[level] = [];
+      if (this.pendingFrames[level]) this.pendingFrames[level] = [];
+      if (this.tls && this.tls.cryptoStreams && this.tls.cryptoStreams[level]) {
+        this.tls.cryptoStreams[level].received.clear();
+        this.tls.cryptoStreams[level].buffer = Buffer.alloc(0);
+      }
+    }
 
     debug(this._label, `Discarded PN space ${pnSpace}`);
   }

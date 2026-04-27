@@ -282,13 +282,21 @@ class QuicConnection extends EventEmitter {
 
   _setupRecoveryCallbacks() {
     this.recovery.on('packetLost', (pnSpace, pn, frames) => {
-      debug(this._label, `Packet ${pn} lost in space ${pnSpace}`);
       const level = pnSpaceToLevel(pnSpace);
+      // Only log + retransmit when the lost packet actually carried
+      // application-relevant frames. Pure ACK / PADDING packets count
+      // as "lost" in the recovery bookkeeping but there's nothing to
+      // resend and nothing the user cares about.
+      let hasRetransmittable = false;
       for (const frame of frames) {
         if (frame.type === FRAME_TYPE.ACK || frame.type === FRAME_TYPE.PADDING) continue;
+        hasRetransmittable = true;
         this.pendingFrames[level].push(frame);
       }
-      this._flushAll();
+      if (hasRetransmittable) {
+        debug(this._label, `Packet ${pn} lost in space ${pnSpace} (retransmitting)`);
+        this._flushAll();
+      }
     });
 
     this.recovery.on('packetAcked', (pnSpace, pn, frames) => {
@@ -383,6 +391,8 @@ class QuicConnection extends EventEmitter {
     if (this.state === CONN_STATE.CLOSED) return;
     this._resetIdleTimer();
 
+    this._ackElicitingThisBatch = 0;
+
     let offset = 0;
     while (offset < buf.length) {
       const remaining = buf.subarray(offset);
@@ -398,7 +408,48 @@ class QuicConnection extends EventEmitter {
       }
     }
 
-    this._flushAll();
+    // RFC 9000 §13.2.2: a receiver SHOULD send an ACK frame after
+    // receiving at least two ack-eliciting packets, and otherwise MAY
+    // delay an ACK by up to max_ack_delay. If we're sending data
+    // anyway, the ACK rides on that packet — flush immediately. If
+    // not, schedule a deferred ack-only flush so several short bursts
+    // are coalesced into one outbound packet.
+    const wantsImmediate =
+      this._ackElicitingThisBatch >= 2 ||
+      this._hasFlushableData();
+
+    if (wantsImmediate) {
+      this._flushAll();
+    } else if (this._ackElicitingThisBatch >= 1) {
+      this._scheduleDeferredAck();
+    } else {
+      // No ack-eliciting received (e.g., pure ACK from peer); still
+      // give pending streams a chance to flush.
+      this._flushAll();
+    }
+  }
+
+  _hasFlushableData() {
+    for (const lvl in this.pendingFrames) {
+      if (this.pendingFrames[lvl] && this.pendingFrames[lvl].length > 0) return true;
+    }
+    for (const stream of this.streams.values()) {
+      if (stream._hasPendingData && stream._hasPendingData()) return true;
+    }
+    return false;
+  }
+
+  _scheduleDeferredAck() {
+    if (this._ackFlushTimer) return;
+    // Cap at maxAckDelay (peer-advertised, validated in recovery), half
+    // it so the ACK still fits comfortably inside the peer's PTO.
+    const cap = (this.recovery && this.recovery.maxAckDelay) || 25;
+    const delay = Math.max(1, Math.floor(cap / 2));
+    this._ackFlushTimer = setTimeout(() => {
+      this._ackFlushTimer = null;
+      this._flushAll();
+    }, delay);
+    if (typeof this._ackFlushTimer.unref === 'function') this._ackFlushTimer.unref();
   }
 
   _processOnePacket(buf) {
@@ -470,6 +521,7 @@ class QuicConnection extends EventEmitter {
         ? ENCRYPTION_LEVEL.ONE_RTT
         : level;
       this.packetsToAck[ackLevel].push(packetNumber);
+      this._ackElicitingThisBatch = (this._ackElicitingThisBatch || 0) + 1;
     }
 
     this._processFrames(frames, level);
@@ -577,6 +629,7 @@ class QuicConnection extends EventEmitter {
 
     if (_hasAckElicitingFrame(frames)) {
       this.packetsToAck[level].push(packetNumber);
+      this._ackElicitingThisBatch = (this._ackElicitingThisBatch || 0) + 1;
     }
 
     this._processFrames(frames, level);
@@ -836,6 +889,12 @@ class QuicConnection extends EventEmitter {
   _flushAll() {
     if (this._flushing) return;
     this._flushing = true;
+
+    // Any pending ACK gets flushed below, so cancel the deferred timer.
+    if (this._ackFlushTimer) {
+      clearTimeout(this._ackFlushTimer);
+      this._ackFlushTimer = null;
+    }
 
     try {
       for (const level of [ENCRYPTION_LEVEL.INITIAL, ENCRYPTION_LEVEL.HANDSHAKE]) {
@@ -1192,6 +1251,7 @@ _flushStreams() {
     this._cleaned = true;
     if (this.idleTimer)       clearTimeout(this.idleTimer);
     if (this._keepaliveTimer) clearTimeout(this._keepaliveTimer);
+    if (this._ackFlushTimer)  { clearTimeout(this._ackFlushTimer); this._ackFlushTimer = null; }
     this.recovery.destroy();
     for (const [, stream] of this.streams) {
       stream.destroy();

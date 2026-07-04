@@ -48,6 +48,11 @@ const {
 // Gateway (H3 + H2 + H1 unified listener)
 const { Http2FallbackGateway } = require('./src/gateway/gateway');
 
+// Client (outbound dialers: QUIC/H3, TCP+TLS/H2, unified Alt-Svc-aware client)
+const { QuicClient, connectQuic }     = require('./src/client/quic-client');
+const { TcpH2ClientSession, connectHttp2 } = require('./src/client/http2-client');
+const { HttpClient, AltSvcCache, parseAltSvc } = require('./src/client/http-client');
+
 // Logger
 const { createLogger, LOG_LEVEL } = require('./src/utils/logger');
 
@@ -98,6 +103,15 @@ module.exports = {
   ServerPush,
 
   Http2FallbackGateway,
+
+  // Client (outbound)
+  QuicClient,
+  connectQuic,
+  TcpH2ClientSession,
+  connectHttp2,
+  HttpClient,
+  AltSvcCache,
+  parseAltSvc,
 
   // Certificate Validation
   CertificateValidator,

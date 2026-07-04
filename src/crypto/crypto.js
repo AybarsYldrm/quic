@@ -12,6 +12,12 @@ const {
   aesExpandKey,_bufToBigInt
 } = require('@fitfak/ssl');
 
+// ChaCha20-Poly1305 is a symmetric cipher already supported natively by
+// Node's OpenSSL binding (unlike the post-quantum KEM/signature schemes this
+// project has to hand-roll), so we borrow it here rather than reimplement a
+// stream cipher + MAC from scratch.
+const nodeCrypto = require('node:crypto');
+
 const {
   INITIAL_SALT_V1, INITIAL_SALT_V2,
   AEAD_AES_128_GCM, AEAD_KEY_LENGTH, AEAD_IV_LENGTH,
@@ -177,11 +183,37 @@ function selectCipher(suite) {
   const id = (suite || 'aes-128-gcm').toLowerCase();
 
   if (id === 'chacha20-poly1305') {
+    // Bug fixed here: this previously called global.chacha20Poly1305Encrypt /
+    // global.chacha20Poly1305Decrypt / global.chacha20Encrypt, none of which
+    // were ever defined anywhere in the codebase. Since ChaCha20-Poly1305 is
+    // the FIRST (most preferred) entry in the default cipher suite list,
+    // every connection that didn't explicitly restrict ciphers to AES would
+    // negotiate it - then silently fail (TypeError swallowed by a bare
+    // try/catch in QuicConnection._sendPacket) the moment a Handshake- or
+    // 1-RTT-level packet needed to be encrypted with it. This is the reason
+    // handshakes seemed to start (the Initial level is hardcoded to
+    // AES-128-GCM per RFC 9001 and worked) but never actually completed.
     return {
       id,
-      aeadEncrypt: (key, nonce, aad, pt) => normalizeEncrypt(global.chacha20Poly1305Encrypt, key, nonce, aad, pt),
-      aeadDecrypt: (key, nonce, aad, ct) => normalizeDecrypt(global.chacha20Poly1305Decrypt, key, nonce, aad, ct),
-      hpMask: (hpKey, sample) => global.chacha20Encrypt(hpKey, sample, Buffer.alloc(5, 0))
+      aeadEncrypt: (key, nonce, aad, pt) => {
+        const cipher = nodeCrypto.createCipheriv('chacha20-poly1305', key, nonce, { authTagLength: AEAD_TAG_LENGTH });
+        cipher.setAAD(aad, { plaintextLength: pt.length });
+        const ct = Buffer.concat([cipher.update(pt), cipher.final()]);
+        return Buffer.concat([ct, cipher.getAuthTag()]);
+      },
+      aeadDecrypt: (key, nonce, aad, ct) => {
+        if (!ct || ct.length < AEAD_TAG_LENGTH) throw new Error('Ciphertext too short');
+        const tag  = ct.subarray(ct.length - AEAD_TAG_LENGTH);
+        const body = ct.subarray(0, ct.length - AEAD_TAG_LENGTH);
+        const decipher = nodeCrypto.createDecipheriv('chacha20-poly1305', key, nonce, { authTagLength: AEAD_TAG_LENGTH });
+        decipher.setAAD(aad, { plaintextLength: body.length });
+        decipher.setAuthTag(tag);
+        return Buffer.concat([decipher.update(body), decipher.final()]);
+      },
+      // RFC 9001 §5.4.4: sample is 16 bytes = 4-byte little-endian counter
+      // followed by a 12-byte nonce, which is exactly Node's `chacha20` IV
+      // layout - so the 16-byte sample can be used directly as the IV.
+      hpMask: (hpKey, sample) => nodeCrypto.createCipheriv('chacha20', hpKey, sample).update(Buffer.alloc(5, 0)),
     };
   }
 

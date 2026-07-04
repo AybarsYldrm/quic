@@ -1522,10 +1522,6 @@ class QuicConnection {
   }
 
   sendDatagram(data) {
-    if (settled) return;
-    socket.send(pkt, port, remoteAddress, (err) => {
-      if (err && !settled) console.error('[UDP] Gönderim hatası:', err.message);
-    });
     if (this.state !== CONN_STATE.CONNECTED) return false;
     if (!this.keys[ENCRYPTION_LEVEL.ONE_RTT]) return false;
     if (typeof data === 'string') data = Buffer.from(data, 'utf8');

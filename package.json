@@ -1,5 +1,8 @@
 {
   "name": "@fitfak/quic",
   "main": "index.js",
-  "version": "1.0.0"
+  "version": "1.0.0",
+  "dependencies": {
+    "@fitfak/ssl": "github:aybarsyldrm/ssl"
+  }
 }

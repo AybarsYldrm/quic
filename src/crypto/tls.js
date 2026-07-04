@@ -10,8 +10,8 @@
 const { EventEmitter } = require('events');
 const { createLogger }  = require('../utils/logger');
 const { CertificateValidator } = require('./cert-validator');
-const { timingSafeEqual } = require('node:crypto');
-const { ENCRYPTION_LEVEL } = require('../constants'); 
+const { timingSafeEqual, verify: nodeVerify, constants: nodeConstants } = require('node:crypto');
+const { ENCRYPTION_LEVEL } = require('../constants');
 
 const { hkdfExtract, hkdfExpandLabel } = require('./crypto');
 const { sha256: rawSha256, _bufToBigInt, _bigIntToBuf, modPow,
@@ -47,6 +47,7 @@ const TLS_ALERTS = {
   DECRYPT_ERROR:           51,
   PROTOCOL_VERSION:        70,
   INTERNAL_ERROR:          80,
+  BAD_CERTIFICATE:         42,
   NO_APPLICATION_PROTOCOL: 120,
 };
 
@@ -77,6 +78,11 @@ function _wrapHandshake(type, body) {
   hdr[0] = type;
   hdr.writeUIntBE(body.length, 1, 3);
   return Buffer.concat([hdr, body]);
+}
+
+function _derToPem(der) {
+  const b64 = der.toString('base64').match(/.{1,64}/g).join('\n');
+  return `-----BEGIN CERTIFICATE-----\n${b64}\n-----END CERTIFICATE-----`;
 }
 
 function _buildExtension(type, data) {
@@ -475,6 +481,21 @@ _parseNewSessionTicket(body) {
 
     const sharedSecret = this._computeSharedSecret();
     this._deriveHandshakeKeys(sharedSecret);
+
+    // Bug fixed here: for the 'tcp' transport, only the server side ever told
+    // its record layer about Handshake-level keys (in
+    // _tcpServerHandshakeFlight). The client never did, so everything the
+    // server sends after ServerHello - EncryptedExtensions, Certificate,
+    // CertificateVerify, Finished, all encrypted under the Handshake traffic
+    // secret - arrived at the client with no read key installed yet and was
+    // silently discarded ("Application data before handshake"), hanging the
+    // handshake forever.
+    if (this.transport === 'tcp' && this.onHandshakeData) {
+      const suite = SUITE_INFO[this.cipherSuite].aead;
+      this.onHandshakeData('SET_WRITE_KEYS', { ...this.keys[ENCRYPTION_LEVEL.HANDSHAKE].clientKeys, cipher: suite }, false);
+      this.onHandshakeData('SET_READ_KEYS',  { ...this.keys[ENCRYPTION_LEVEL.HANDSHAKE].serverKeys, cipher: suite }, false);
+    }
+
     this.state = 'WAIT_ENCRYPTED_EXTENSIONS';
   }
 
@@ -494,6 +515,7 @@ _parseNewSessionTicket(body) {
 
   _handleCertificate(body) {
     this.peerCertificate = body;
+    this.peerCertChain = [];
     let off = 0;
     const ctxLen = body[off++]; off += ctxLen;
     const certsLen = (body[off] << 16) | (body[off + 1] << 8) | body[off + 2]; off += 3;
@@ -502,16 +524,91 @@ _parseNewSessionTicket(body) {
     while (off + 3 <= end) {
       const certLen = (body[off] << 16) | (body[off + 1] << 8) | body[off + 2]; off += 3;
       if (off + certLen > end) break;
+      const der = body.subarray(off, off + certLen);
       off += certLen;
+      this.peerCertChain.push(_derToPem(der));
       if (off + 2 <= end) {
         const xLen = body.readUInt16BE(off); off += 2 + xLen;
       }
     }
+    this.peerIdentity = this.peerCertChain.length > 0
+      ? CertificateValidator.extractIdentity(this.peerCertChain[0])
+      : null;
     this.state = 'WAIT_CERTIFICATE_VERIFY';
   }
 
+  // RFC 8446 §4.4.3: CertificateVerify imzasini karsi tarafin sertifikasindaki
+  // genel anahtarla dogrular. Bu adim olmadan TLS, kimligi dogrulanmamis herhangi
+  // bir sunucuyla (MITM dahil) "basarili" bir el sikisma tamamlar.
   _handleCertificateVerify(body) {
+    const sigAlg = body.readUInt16BE(0);
+    const sigLen = body.readUInt16BE(2);
+    const signature = body.subarray(4, 4 + sigLen);
+
+    const content = Buffer.concat([
+      Buffer.alloc(64, 0x20),
+      Buffer.from(this.isServer ? 'TLS 1.3, client CertificateVerify\x00' : 'TLS 1.3, server CertificateVerify\x00', 'ascii'),
+      this._getTranscriptHashBeforeLast(),
+    ]);
+
+    if (!this.isServer) {
+      this._verifyPeerCertificateVerify(sigAlg, signature, content);
+    }
     this.state = 'WAIT_FINISHED';
+  }
+
+  _verifyPeerCertificateVerify(sigAlg, signature, content) {
+    if (!this.peerCertChain || this.peerCertChain.length === 0) {
+      throw Object.assign(new Error('CertificateVerify received without a prior Certificate message'), { alertCode: TLS_ALERTS.DECODE_ERROR });
+    }
+
+    const x509 = CertificateValidator.createX509(this.peerCertChain[0]);
+    if (!x509) {
+      throw Object.assign(new Error('Peer certificate could not be parsed'), { alertCode: TLS_ALERTS.BAD_CERTIFICATE });
+    }
+
+    let ok = false;
+    try {
+      if (sigAlg === SIG_ECDSA_SECP256R1_SHA256 || sigAlg === 0x0503) {
+        ok = nodeVerify('sha256', content, { key: x509.publicKey }, signature);
+      } else if (sigAlg === SIG_RSA_PSS_RSAE_SHA256) {
+        ok = nodeVerify('sha256', content, {
+          key:        x509.publicKey,
+          padding:    nodeConstants.RSA_PKCS1_PSS_PADDING,
+          saltLength: nodeConstants.RSA_PSS_SALTLEN_DIGEST,
+        }, signature);
+      } else if (sigAlg === 0x0401) {
+        ok = nodeVerify('sha256', content, { key: x509.publicKey, padding: nodeConstants.RSA_PKCS1_PADDING }, signature);
+      } else if (sigAlg === SIG_ML_DSA_65) {
+        // Hibrit imza: bu protokolde ML-DSA genel anahtarinin degisimi icin ayri
+        // bir kanal henuz yok, bu yuzden yalnizca klasik ECDSA bileseni dogrulanabilir.
+        const ecSigLen = signature.readUInt16BE(0);
+        const ecSig    = signature.subarray(2, 2 + ecSigLen);
+        ok = nodeVerify('sha256', content, { key: x509.publicKey }, ecSig);
+        if (ok) log.warn(`${this.roleLog} [SIGNATURE_WARN] ML-DSA-65 hybrid: only the classic ECDSA component could be verified (no ML-DSA public-key channel yet)`);
+      } else {
+        throw new Error(`Unsupported signature algorithm: 0x${sigAlg.toString(16)}`);
+      }
+    } catch (e) {
+      throw Object.assign(new Error(`CertificateVerify validation failed: ${e.message}`), { alertCode: TLS_ALERTS.DECRYPT_ERROR });
+    }
+
+    if (!ok) {
+      throw Object.assign(new Error('CertificateVerify signature is invalid (possible impersonation/MITM)'), { alertCode: TLS_ALERTS.DECRYPT_ERROR });
+    }
+    log.info(`${this.roleLog} [SIGNATURE] Peer CertificateVerify signature verified (0x${sigAlg.toString(16)})`);
+
+    if (this.rejectUnauthorized) {
+      const result = CertificateValidator.validate({
+        cert:               this.peerCertChain.join('\n'),
+        ca:                 this.ca,
+        hostname:           this.serverName,
+        rejectUnauthorized: true,
+      });
+      if (!result.valid) {
+        throw Object.assign(new Error(`Peer certificate is not trusted: ${result.errors.join('; ')}`), { alertCode: TLS_ALERTS.BAD_CERTIFICATE });
+      }
+    }
   }
 
   _handleFinished(level, body) {
@@ -553,6 +650,8 @@ _parseNewSessionTicket(body) {
       }
     } else {
       this._deriveApplicationKeys();
+      if (this.transport === 'tcp') this._buildTcpAppKeys();
+
       const clientMsgs = [];
       const clientFinished = this._buildFinished(this.clientHandshakeSecret);
       this._addToTranscript(clientFinished);
@@ -562,9 +661,17 @@ _parseNewSessionTicket(body) {
       log.info(`${this.roleLog} [CONNECTION] Handshake complete, context secure ALPN: ${this.selectedAlpn || 'Yok'}`);
 
       if (this.transport === 'tcp' && this.onHandshakeData) {
+        // Bug fixed here: this used to switch the record layer to
+        // Application traffic keys *before* sending the client's own
+        // Finished message, so Finished went out encrypted with the wrong
+        // key - the server (still reading with Handshake-level keys, as it
+        // must until it has seen and verified Finished) could never decrypt
+        // it, and the handshake would never complete. RFC 8446 requires the
+        // client's Finished to be sent under the Handshake traffic secret;
+        // only messages *after* it switch to Application keys.
+        this.onHandshakeData(22, Buffer.concat(clientMsgs), true);
         this.onHandshakeData('SET_WRITE_KEYS', this._tcpAppKeys.client, false);
         this.onHandshakeData('SET_READ_KEYS',  this._tcpAppKeys.server, false);
-        this.onHandshakeData(22, Buffer.concat(clientMsgs), true);
       }
 
       if (this.onSecure) this.onSecure(secureMeta);
@@ -850,7 +957,13 @@ const decResult = mlkemDecapsulate(this.mlkemKey.dk, serverMlkemCt);
 
   _stashTcpApplicationKeys() {
     this._deriveApplicationKeys();
-    
+    this._buildTcpAppKeys();
+  }
+
+  // Uygulama (1-RTT) trafik anahtarlarından TCP kayıt katmanının kullanacağı
+  // {client,server} anahtar yapısını türetir. Hem sunucu (önceden, Finished
+  // beklenirken) hem istemci (kendi Finished'ını üretirken) tarafından çağrılır.
+  _buildTcpAppKeys() {
     this._tcpAppKeys = {
       server: {
         key:    this.keys[ENCRYPTION_LEVEL.ONE_RTT].serverKeys.key,
@@ -1043,7 +1156,14 @@ const decResult = mlkemDecapsulate(this.mlkemKey.dk, serverMlkemCt);
         } catch (e) {
           log.warn(`${this.roleLog} [EXTENSION_WARN] İmza algoritmaları parse edilirken hata oluştu.`);
         }
-      } else if (type === 0x0010 && this.isServer) {
+      } else if (type === 0x0010) {
+        // Bug fixed here: this whole branch used to be guarded by
+        // `type === 0x0010 && this.isServer`, so the `else` arm below - meant
+        // for the CLIENT to read the server's chosen ALPN out of
+        // EncryptedExtensions - was unreachable dead code. The client's
+        // this.selectedAlpn stayed null forever, which broke anything
+        // downstream that keyed off the negotiated protocol (e.g. an HTTP/2
+        // client refusing to proceed because it never saw 'h2' come back).
         if (this.isServer) {
           let p = 2; // list_len atla
           while (p < data.length) {

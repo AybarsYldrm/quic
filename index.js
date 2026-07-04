@@ -1,7 +1,7 @@
 'use strict';
 
 const { Server } = require('./src/server/server');
-const { QuicConnection, Http2Connection, CONN_STATE } = require('./src/connection/connection');
+const { Transport, QuicConnection, Http2Connection, CONN_STATE } = require('./src/connection/connection');
 const { QuicStream, Http2Stream,  STREAM_STATE } = require('./src/stream/stream');
 const { RecoveryState, PN_SPACE } = require('./src/recovery/recovery');
 const { TLS } = require('./src/crypto/tls');
@@ -60,6 +60,12 @@ module.exports = {
   // High-level API
   Server,
   //QuicServer,
+  // Transport is the role-agnostic facade around QuicConnection/
+  // Http2Connection - used internally by the client dialers, and exported
+  // here so a pure-QUIC (no HTTP/3) server or client can be built directly,
+  // without H3Connection's control streams being attached to every
+  // connection the way Server always does.
+  Transport,
   QuicConnection,
   QuicStream,
 

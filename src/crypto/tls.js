@@ -278,6 +278,7 @@ class TLS extends EventEmitter {
   }
 
   receiveCryptoData(level, offset, data) {
+    if (this._dead) return;
     const stream = this.cryptoStreams[level];
     if (!stream) return;
     stream.received.set(offset, data);
@@ -296,6 +297,13 @@ class TLS extends EventEmitter {
     let buf = stream.buffer;
 
     while (buf.length >= 4) {
+      // Bug fixed here: without this check, a fatal error on one message in
+      // a batch (e.g. CertificateVerify failing validation) did not stop the
+      // loop from happily continuing on to the next message (e.g. Finished)
+      // as if the connection were still healthy. See the comment in
+      // _fatalError() for the full failure chain this caused.
+      if (this._dead) break;
+
       const msgType = buf[0];
       const msgLen  = (buf[1] << 16) | (buf[2] << 8) | buf[3];
       if (buf.length < 4 + msgLen) break;
@@ -312,6 +320,7 @@ class TLS extends EventEmitter {
   }
 
   _handleMessage(level, type, body) {
+    if (this._dead) return;
     try {
       if (!this.isServer && type === TLS_HANDSHAKE.NEW_SESSION_TICKET) {
         log.trace(`${this.roleLog} [STATE] NewSessionTicket received (Resumption PSK).`);
@@ -1468,9 +1477,23 @@ const decResult = mlkemDecapsulate(this.mlkemKey.dk, serverMlkemCt);
   }
 
   _fatalError(err, alertDesc = TLS_ALERTS.HANDSHAKE_FAILURE) {
+    // Bug fixed here: this used to only send an alert and emit 'tlsError',
+    // with nothing recording that the connection is now dead. A handshake
+    // flight commonly arrives as one batch (EncryptedExtensions+Certificate+
+    // CertificateVerify+Finished processed in one _processMessages loop);
+    // if e.g. CertificateVerify failed validation (untrusted CA, bad
+    // signature), the loop just kept going into Finished as if nothing had
+    // happened, "completed" the handshake, and then tried to send the
+    // client's Finished packet over a socket/connection that the tlsError
+    // handler upstream had already torn down - producing an unrelated,
+    // uncaught crash (e.g. a UDP socket ERR_SOCKET_DGRAM_NOT_RUNNING) that
+    // masked the real, already-reported certificate error.
+    if (this._dead) return;
+    this._dead = true;
+
     log.error(`${this.roleLog} [TLS_FATAL] Durum Kesilmesi:`, err.message);
     this._sendAlert(2, alertDesc);
-    
+
     if (this.transport === 'tcp' && this.onError) this.onError(err);
     this.emit('tlsError', err);
   }

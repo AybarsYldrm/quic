@@ -931,13 +931,25 @@ class QuicConnection {
       }
     }
 
-    const wantsImmediate = this._ackElicitingThisBatch >= 2 || this._hasFlushableData();
-    if (wantsImmediate) {
-      this._flushAll();
-    } else if (this._ackElicitingThisBatch >= 1) {
-      this._scheduleDeferredAck();
-    } else {
-      this._flushAll();
+    // Bug fixed here: a fatal TLS error handled *inside* the packet-processing
+    // try/catch above (e.g. certificate rejection) can synchronously close
+    // this connection - via the 'tlsError' -> _cleanup() chain - before this
+    // point ever runs. Flushing (or even trying to derive an ACK) afterwards
+    // would previously send on a torn-down connection and could throw again,
+    // uncaught, since none of this was wrapped in try/catch.
+    if (this.state === CONN_STATE.CLOSED) return;
+
+    try {
+      const wantsImmediate = this._ackElicitingThisBatch >= 2 || this._hasFlushableData();
+      if (wantsImmediate) {
+        this._flushAll();
+      } else if (this._ackElicitingThisBatch >= 1) {
+        this._scheduleDeferredAck();
+      } else {
+        this._flushAll();
+      }
+    } catch (err) {
+      dbg(this._label, 'post-receive flush failed:', err.message);
     }
   }
 
@@ -1475,7 +1487,15 @@ class QuicConnection {
 
     const isAckEliciting = frames.some(f => f.type !== FRAME_TYPE.ACK && f.type !== FRAME_TYPE.PADDING);
     this.recovery.onPacketSent(pnSpace, pn, packet.length, isAckEliciting, frames);
-    this._sendDatagram(packet, this.remoteAddress, this.remotePort);
+    try {
+      // A caller-supplied sendDatagram (e.g. a dgram socket that's already
+      // been closed by an error path racing this one) can throw
+      // synchronously rather than reporting failure via callback - don't let
+      // that surface as an unrelated crash deep in packet-building code.
+      this._sendDatagram(packet, this.remoteAddress, this.remotePort);
+    } catch (err) {
+      dbg(this._label, 'sendDatagram failed:', err.message);
+    }
   }
 
   _buildAckFrame(level) {

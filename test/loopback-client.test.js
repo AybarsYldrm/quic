@@ -86,6 +86,27 @@ async function main() {
   assert.ok(rejected, 'connection without trusted CA should have been rejected');
   console.log('PASS: client refuses to trust an unverifiable certificate by default');
 
+  // 3b. Same, but over QUIC - regression test for a cascade bug where a
+  // CertificateVerify rejection didn't stop _processMessages from continuing
+  // on into Finished, "completing" the handshake, and then crashing with an
+  // unrelated, uncaught error (a UDP send on the socket the first error had
+  // already closed) instead of surfacing one clean rejection.
+  console.log('\n=== [3b] QUIC certificate validation must reject unknown CA (no cascade) ===');
+  let quicRejected = false;
+  try {
+    await connectQuic('localhost', port, { timeout: 3000 }); // no `ca` supplied
+  } catch (e) {
+    quicRejected = true;
+    console.log('[test] correctly rejected:', e.message);
+    assert.match(e.message, /not trusted/);
+  }
+  assert.ok(quicRejected, 'QUIC connection without trusted CA should have been rejected');
+  // A follow-up, properly-trusted connection must still work - proves the
+  // server/process wasn't left in a broken state by the rejection above.
+  const q1b = await connectQuic('localhost', port, commonOpts);
+  q1b.close();
+  console.log('PASS: QUIC client refuses an unverifiable certificate with a single clean error, no cascade');
+
   // 4. Unified HttpClient: races h2+h3, caches Alt-Svc/connections
   console.log('\n=== [4] HttpClient race + reuse ===');
   const client = new HttpClient(commonOpts);

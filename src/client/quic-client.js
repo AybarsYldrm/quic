@@ -19,6 +19,7 @@ const { H3Connection } = require('../h3/http3');
 const { SessionTicketStore } = require('../crypto/zero-rtt');
 const { QUIC_VERSION_1 } = require('../constants');
 const { createLogger } = require('../utils/logger');
+const { collectResponse } = require('./response');
 
 const log = createLogger('QuicClient');
 
@@ -119,19 +120,42 @@ class QuicClient {
       });
 
       transport.on('connected', () => {
-        const h3 = new H3Connection(transport, {
-          isServer:           false,
-          enableWebTransport: options.enableWebTransport || false,
-        });
-        settleSuccess({
+        // options.http3 defaults to true (HTTP/3-over-QUIC is the common
+        // case); pass { http3: false } for a plain QUIC connection with no
+        // HTTP/3 framing at all - transport.createStream()/sendDatagram()/
+        // 'stream' events are still fully available either way, this only
+        // controls whether the H3 control streams get opened.
+        const wantsH3 = options.http3 !== false;
+        const h3 = wantsH3
+          ? new H3Connection(transport, {
+              isServer:           false,
+              enableWebTransport: options.enableWebTransport || false,
+            })
+          : null;
+
+        const conn = {
           transport,
           h3,
+          // Convenience wrapper around h3.request() for callers who just
+          // want a response, not the raw H3Request event API. Mirrors
+          // HttpClient's shape so the two are interchangeable.
+          fetch: wantsH3
+            ? (method, path, headers = {}, reqOptions = {}) => {
+                const req = h3.request(method, path, headers, { authority: host, endStream: true, ...reqOptions });
+                return collectResponse(req, 'h3');
+              }
+            : undefined,
+          // Shortcuts for raw QUIC usage (no HTTP/3 framing).
+          createStream: (bidirectional = true) => transport.createStream(bidirectional),
+          sendDatagram: (data) => transport.sendDatagram(data),
+          on: (event, fn) => transport.on(event, fn),
           close: (errorCode = 0) => {
             try { transport.close(errorCode); } catch (_) {}
             try { socket.removeAllListeners('message'); } catch (_) {}
             try { socket.close(); } catch (_) {}
           },
-        });
+        };
+        settleSuccess(conn);
       });
 
       transport.on('error', (err) => {

@@ -19,6 +19,7 @@ const { EventEmitter } = require('events');
 
 const { TLS } = require('../crypto/tls');
 const { createLogger } = require('../utils/logger');
+const { collectResponse } = require('./response');
 
 const log = createLogger('Http2Client');
 
@@ -271,7 +272,17 @@ function connectHttp2(host, port = 443, options = {}) {
       settled = true;
       clearTimeout(timer);
       const h2 = session.startH2();
-      resolve({ session, h2, close: (code) => session.close(code) });
+      resolve({
+        session,
+        h2,
+        // Convenience wrapper around h2.request(), matching quic-client's
+        // and HttpClient's shape.
+        fetch: (method, path, headers = {}, reqOptions = {}) => {
+          const req = h2.request(method, path, headers, { authority: host, endStream: true, ...reqOptions });
+          return collectResponse(req, 'h2');
+        },
+        close: (code) => session.close(code),
+      });
     });
 
     session.once('error', (err) => {

@@ -252,6 +252,11 @@ class Server extends EventEmitter {
     this.transportParams    = options.transportParams    || {};
     this.keepaliveInterval  = options.keepaliveInterval  || 0;
     this.requireRetry = options.requireRetry || false;
+    // Opt-outs for a QUIC-only deployment with no HTTP/3 or TCP/HTTP-2 layer
+    // at all - e.g. a custom protocol running directly over QUIC streams/
+    // datagrams. Both default to true so existing behavior is unchanged.
+    this.enableH3     = options.enableH3  !== false;
+    this.enableTcp    = options.enableTcp !== false;
     this.tokenKey     = crypto.randomBytes(16);
     this.supportedVersions = [QUIC_VERSION_1];
     this.ticketStore  = new SessionTicketStore();
@@ -269,32 +274,34 @@ class Server extends EventEmitter {
     if (host !== undefined) this.host = host;
 
     return new Promise((resolve, reject) => {
-      this.tcpServer = net.createServer((socket) => {
-        this.stats.connectionsAccepted++;
-        const session = new TcpH2Session(socket, {
-          cert:               this.cert,
-          key:                this.key,
-          alpn:               this.alpn.filter(a => a !== 'h3'),
-          cipherSuites:       this.cipherSuites,
-          requestCert:        this.requestCert,
-          rejectUnauthorized: this.rejectUnauthorized,
-          ca:                 this.ca,
+      if (this.enableTcp) {
+        this.tcpServer = net.createServer((socket) => {
+          this.stats.connectionsAccepted++;
+          const session = new TcpH2Session(socket, {
+            cert:               this.cert,
+            key:                this.key,
+            alpn:               this.alpn.filter(a => a !== 'h3'),
+            cipherSuites:       this.cipherSuites,
+            requestCert:        this.requestCert,
+            rejectUnauthorized: this.rejectUnauthorized,
+            ca:                 this.ca,
+          });
+
+          session.on('request', (req) => {
+            req.protocol = 'h2';
+            const origRespond = req.respond.bind(req);
+            req.respond = (status, headers = {}) => {
+              headers['alt-svc'] = `h3=":${this.port}"; ma=86400, h3-29=":${this.port}"; ma=86400`;
+              return origRespond(status, headers);
+            };
+            this.emit('request', req);
+          });
+
+          session.on('error', (err) => log.debug(`[TCP] Session error: ${err.message}`));
         });
+        this.tcpServer.on('error', (err) => { this.emit('error', err); reject(err); });
+      }
 
-        session.on('request', (req) => {
-          req.protocol = 'h2';
-          const origRespond = req.respond.bind(req);
-          req.respond = (status, headers = {}) => {
-            headers['alt-svc'] = `h3=":${this.port}"; ma=86400, h3-29=":${this.port}"; ma=86400`;
-            return origRespond(status, headers);
-          };
-          this.emit('request', req);
-        });
-
-        session.on('error', (err) => log.debug(`[TCP] Session error: ${err.message}`));
-      });
-
-      this.tcpServer.on('error', (err) => { this.emit('error', err); reject(err); });
       this.udpSocket = dgram.createSocket('udp4');
       this.udpSocket.on('message', (msg, rinfo) => { this.stats.packetsReceived++; this._handleDatagram(msg, rinfo); });
       this.udpSocket.on('error',   (err)         => { this.emit('error', err); reject(err); });
@@ -302,11 +309,13 @@ class Server extends EventEmitter {
       this.udpSocket.bind(this.port, this.host, () => {
         const addr    = this.udpSocket.address();
         this.port     = addr.port;
-        this.tcpServer.listen(this.port, this.host, () => {
-          log.info(`Server listening on TCP & UDP ${addr.address}:${addr.port}`);
+        const finish = () => {
+          log.info(`Server listening on ${this.enableTcp ? 'TCP & UDP' : 'UDP'} ${addr.address}:${addr.port}`);
           this.emit('listening', addr);
           resolve(addr);
-        });
+        };
+        if (this.enableTcp) this.tcpServer.listen(this.port, this.host, finish);
+        else finish();
       });
     });
   }
@@ -361,27 +370,35 @@ class Server extends EventEmitter {
       this.stats.connectionsAccepted++;
       log.info(`[QUIC] Connection established from ${rinfo.address}:${rinfo.port}`);
 
-      const h3 = new H3Connection(transport, {
-        isServer:           true,
-        enableWebTransport: this.transportParams.enableWebTransport || true,
-      });
+      // enableH3:false gives a raw QUIC connection with no HTTP/3 framing at
+      // all - the app is expected to create/read streams and datagrams on
+      // `transport` itself (via the 'connection' event below) instead of
+      // 'request'. Attaching H3Connection unconditionally, as this used to,
+      // would otherwise consume every stream the peer opens as if it were
+      // HTTP/3, corrupting any custom protocol running directly over QUIC.
+      if (this.enableH3) {
+        const h3 = new H3Connection(transport, {
+          isServer:           true,
+          enableWebTransport: this.transportParams.enableWebTransport || true,
+        });
 
-      h3.on('request', (req) => {
-        req.protocol = 'h3';
+        h3.on('request', (req) => {
+          req.protocol = 'h3';
 
-        if (!req.socket) {
-            req.socket = {
-                remoteAddress: rinfo.address,
-                remotePort: rinfo.port
-            };
-        }
+          if (!req.socket) {
+              req.socket = {
+                  remoteAddress: rinfo.address,
+                  remotePort: rinfo.port
+              };
+          }
 
-        if (!req.rawHeaders) {
-          req.rawHeaders = Object.entries(req.headers || {}).flat();
-        }
+          if (!req.rawHeaders) {
+            req.rawHeaders = Object.entries(req.headers || {}).flat();
+          }
 
-        this.emit('request', req);
-      });
+          this.emit('request', req);
+        });
+      }
 
       this.emit('connection', transport);
     });

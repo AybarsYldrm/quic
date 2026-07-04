@@ -20,6 +20,7 @@
 
 const { connectQuic }  = require('./quic-client');
 const { connectHttp2 } = require('./http2-client');
+const { collectResponse } = require('./response');
 const { createLogger } = require('../utils/logger');
 
 const log = createLogger('HttpClient');
@@ -38,20 +39,6 @@ function parseAltSvc(headerValue) {
     };
   }
   return null;
-}
-
-function collectResponse(req, protocol) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    let settled = false;
-    req.on('error', (err) => { if (settled) return; settled = true; reject(err); });
-    req.on('data', (chunk) => chunks.push(chunk));
-    req.on('end', () => {
-      if (settled) return;
-      settled = true;
-      resolve({ status: req.status, headers: req.headers || {}, body: Buffer.concat(chunks), protocol });
-    });
-  });
 }
 
 class AltSvcCache {

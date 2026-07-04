@@ -87,7 +87,17 @@ class Http2FallbackGateway extends EventEmitter {
     async listen() {
         this._setupListeners();
         // Server.listen() zaten TCP ve UDP'yi başlatıyor
-        await this.server.listen(this.port, this.host);
+        const addr = await this.server.listen(this.port, this.host);
+        this.port = addr.port;
+        // Bug fixed here: Router defaults altSvcPort to 443 and nothing
+        // ever told it otherwise, so every response advertised
+        // `alt-svc: h3=":443"` regardless of what port the gateway was
+        // actually listening on. Any client on a non-443 port (every dev/
+        // test setup, and any deployment behind a different public port)
+        // would follow that Alt-Svc hint straight into a dead end.
+        if (this.router && typeof this.router.altSvcPort !== 'undefined') {
+            this.router.altSvcPort = this.port;
+        }
         log.info(`Gateway active on ${this.host}:${this.port} [TCP+UDP]`);
     }
 }

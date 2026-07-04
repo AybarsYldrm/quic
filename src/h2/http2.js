@@ -136,7 +136,14 @@ class H2Connection extends EventEmitter {
     this.goawayId = lastStreamId;
     for (const [streamId, req] of this.activeRequests) {
       if (streamId > this.goawayId) {
-        req.emit('error', new Error(`Stream ${streamId} rejected by GOAWAY (Code: ${errorCode})`));
+        // Node crashes the process if 'error' is emitted with no listener
+        // attached; a caller that only listens for 'data'/'end' (a very
+        // common case, and exactly what this project's own test/example
+        // code does) would otherwise bring down the whole process on a
+        // routine GOAWAY during connection teardown.
+        if (req.listenerCount('error') > 0) {
+          req.emit('error', new Error(`Stream ${streamId} rejected by GOAWAY (Code: ${errorCode})`));
+        }
         this.activeRequests.delete(streamId);
       }
     }

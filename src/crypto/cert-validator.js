@@ -416,7 +416,15 @@ class CertificateValidator {
     }
 
     // Chain
-    if (cert && ca) {
+    // Bug fixed here: this used to be `if (cert && ca)`, which skipped chain
+    // trust checking entirely whenever no CA bundle was supplied - silently
+    // treating "I have nothing to verify trust against" as "trusted". A
+    // client validating a real peer's certificate with rejectUnauthorized
+    // true but no explicit `ca` would accept ANY CA-issued certificate
+    // instead of failing closed. validateChain() already handles an empty/
+    // missing CA list correctly (it only trusts a self-signed root in that
+    // case), so it just needs to actually run.
+    if (cert) {
       const chainResult = this.validateChain(cert, ca, { rejectUnauthorized });
       if (chainResult.warning) {
         warnings.push(chainResult.warning);

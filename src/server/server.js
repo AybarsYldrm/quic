@@ -26,6 +26,15 @@ const { Transport }              = require('../connection/connection');
 const { createLogger } = require('../utils/logger');
 const log = createLogger('Server');
 
+// Bug fixed here: this used to be `cipher.includes('256') ? 'aes-256-gcm' :
+// 'aes-128-gcm'`, which silently mapped a negotiated chacha20-poly1305
+// suite onto aes-128-gcm - a 16-byte-key algorithm being fed a 32-byte
+// chacha20 key, which Node's crypto module rejects outright.
+function _tlsAeadAlgo(cipherName) {
+  if (cipherName === 'chacha20-poly1305') return 'chacha20-poly1305';
+  return cipherName && cipherName.includes('256') ? 'aes-256-gcm' : 'aes-128-gcm';
+}
+
 class TcpH2Session extends EventEmitter {
   constructor(socket, tlsOpts = {}) {
     super();
@@ -130,8 +139,8 @@ class TcpH2Session extends EventEmitter {
     const { key, iv, cipher } = this._sendKeys;
     const nonce    = this._buildNonce(iv, this._seqSend++);
     const inner    = Buffer.concat([plaintext, Buffer.from([contentType])]);
-    const cipherFn = cipher.includes('256') ? 'aes-256-gcm' : 'aes-128-gcm';
-    const enc      = crypto.createCipheriv(cipherFn, key, nonce);
+    const cipherFn = _tlsAeadAlgo(cipher);
+    const enc      = crypto.createCipheriv(cipherFn, key, nonce, { authTagLength: 16 });
     const aad      = Buffer.from([0x17, 0x03, 0x03, 0x00, 0x00]);
     aad.writeUInt16BE(inner.length + 16, 3);
     enc.setAAD(aad);
@@ -169,8 +178,8 @@ class TcpH2Session extends EventEmitter {
     const body     = ciphertext.subarray(0, ciphertext.length - 16);
     const aad      = Buffer.from([0x17, 0x03, 0x03, 0x00, 0x00]);
     aad.writeUInt16BE(ciphertext.length, 3);
-    const cipherFn = cipher.includes('256') ? 'aes-256-gcm' : 'aes-128-gcm';
-    const dec      = crypto.createDecipheriv(cipherFn, key, nonce);
+    const cipherFn = _tlsAeadAlgo(cipher);
+    const dec      = crypto.createDecipheriv(cipherFn, key, nonce, { authTagLength: 16 });
     dec.setAAD(aad); dec.setAuthTag(tag);
     let plain;
     try { plain = Buffer.concat([dec.update(body), dec.final()]); }

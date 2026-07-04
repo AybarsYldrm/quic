@@ -246,7 +246,12 @@ class H3Connection extends EventEmitter {
             this.goawayId = Number(id);
             for (const [streamId, req] of this.activeRequests) {
               if (streamId >= this.goawayId) {
-                req.emit('error', new Error(`Stream ${streamId} rejected by GOAWAY`));
+                // See http2.js _handleGoaway: don't crash callers that never
+                // attached an 'error' listener (Node throws on unhandled
+                // 'error' emissions with none registered).
+                if (req.listenerCount('error') > 0) {
+                  req.emit('error', new Error(`Stream ${streamId} rejected by GOAWAY`));
+                }
                 this.activeRequests.delete(streamId);
               }
             }
